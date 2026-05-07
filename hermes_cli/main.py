@@ -2744,6 +2744,7 @@ def _model_flow_openai_codex(config, current_model=""):
         DEFAULT_CODEX_BASE_URL,
     )
     from hermes_cli.codex_models import get_codex_model_ids
+    from hermes_cli.config import load_config, save_config
 
     status = get_codex_auth_status()
     if status.get("logged_in"):
@@ -2815,9 +2816,18 @@ def _model_flow_openai_codex(config, current_model=""):
 
     selected = _prompt_model_selection(codex_models, current_model=current_model)
     if selected:
+        selected_effort = _prompt_openai_codex_reasoning_effort(config)
         _save_model_choice(selected)
         _update_config_for_provider("openai-codex", DEFAULT_CODEX_BASE_URL)
+        if selected_effort is not None:
+            cfg = load_config()
+            _set_reasoning_effort(cfg, selected_effort)
+            save_config(cfg)
         print(f"Default model set to: {selected} (via OpenAI Codex)")
+        if selected_effort == "none":
+            print("Reasoning disabled for this model.")
+        elif selected_effort:
+            print(f"Reasoning effort set to: {selected_effort}")
     else:
         print("No change.")
 
@@ -3839,6 +3849,15 @@ def _prompt_reasoning_effort_selection(efforts, current_effort=""):
             return None
 
 
+def _prompt_openai_codex_reasoning_effort(config):
+    """Prompt for OpenAI Codex reasoning effort."""
+    current_effort = _current_reasoning_effort(config)
+    return _prompt_reasoning_effort_selection(
+        ("minimal", "low", "medium", "high", "xhigh"),
+        current_effort=current_effort,
+    )
+
+
 def _model_flow_copilot(config, current_model=""):
     """GitHub Copilot flow using env vars, gh CLI, or OAuth device code."""
     from hermes_cli.auth import (
@@ -4043,6 +4062,7 @@ def _model_flow_copilot_acp(config, current_model=""):
     )
     from hermes_cli.models import (
         fetch_github_model_catalog,
+        github_model_reasoning_efforts,
         normalize_copilot_model_id,
     )
     from hermes_cli.config import load_config, save_config
@@ -4127,6 +4147,18 @@ def _model_flow_copilot_acp(config, current_model=""):
         )
         or selected
     )
+    initial_cfg = load_config()
+    current_effort = _current_reasoning_effort(initial_cfg)
+    reasoning_efforts = github_model_reasoning_efforts(
+        selected,
+        catalog=catalog,
+        api_key=catalog_api_key,
+    ) or ("low", "medium", "high")
+    print(f"  {selected} supports reasoning controls via Copilot CLI/ACP.")
+    selected_effort = _prompt_reasoning_effort_selection(
+        reasoning_efforts,
+        current_effort=current_effort,
+    )
     _save_model_choice(selected)
 
     cfg = load_config()
@@ -4137,10 +4169,16 @@ def _model_flow_copilot_acp(config, current_model=""):
     model["provider"] = provider_id
     model["base_url"] = effective_base
     model["api_mode"] = "chat_completions"
+    if selected_effort is not None:
+        _set_reasoning_effort(cfg, selected_effort)
     save_config(cfg)
     deactivate_provider()
 
     print(f"Default model set to: {selected} (via {pconfig.name})")
+    if selected_effort == "none":
+        print("Reasoning disabled for this model.")
+    elif selected_effort:
+        print(f"Reasoning effort set to: {selected_effort}")
 
 
 def _prompt_api_key(pconfig, existing_key: str, provider_id: str = "") -> tuple:

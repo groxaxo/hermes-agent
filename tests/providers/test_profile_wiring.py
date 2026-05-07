@@ -288,3 +288,30 @@ class TestRequestOverridesParity:
             request_overrides={"top_p": 0.9},
         )
         assert kw["top_p"] == 0.9
+
+
+
+class TestCopilotACPProfile:
+    def test_reasoning_effort_forwards_top_level(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-5.4", messages=_msgs(), tools=None,
+            provider_profile=get_provider_profile("copilot-acp"),
+            reasoning_config={"enabled": True, "effort": "high"},
+        )
+        assert kw["reasoning_effort"] == "high"
+
+    def test_reasoning_effort_clamps_aliases(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-5.4", messages=_msgs(), tools=None,
+            provider_profile=get_provider_profile("copilot-acp"),
+            reasoning_config={"enabled": True, "effort": "xhigh"},
+        )
+        assert kw["reasoning_effort"] == "high"
+
+    def test_reasoning_disabled_forwards_none(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-5.4", messages=_msgs(), tools=None,
+            provider_profile=get_provider_profile("copilot-acp"),
+            reasoning_config={"enabled": False},
+        )
+        assert kw["reasoning_effort"] == "none"

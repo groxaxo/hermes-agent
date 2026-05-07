@@ -361,8 +361,12 @@ class CopilotACPClient:
         timeout: float | None = None,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: Any = None,
+        reasoning_effort: str | None = None,
+        reasoning: dict[str, Any] | None = None,
         **_: Any,
     ) -> Any:
+        if not reasoning_effort and isinstance(reasoning, dict):
+            reasoning_effort = str(reasoning.get("effort") or "").strip() or None
         prompt_text = _format_messages_as_prompt(
             messages or [],
             model=model,
@@ -388,6 +392,8 @@ class CopilotACPClient:
         response_text, reasoning_text = self._run_prompt(
             prompt_text,
             timeout_seconds=_effective_timeout,
+            model=model,
+            reasoning_effort=reasoning_effort,
         )
 
         tool_calls, cleaned_text = _extract_tool_calls_from_text(response_text)
@@ -413,7 +419,14 @@ class CopilotACPClient:
             model=model or "copilot-acp",
         )
 
-    def _run_prompt(self, prompt_text: str, *, timeout_seconds: float) -> tuple[str, str]:
+    def _run_prompt(
+        self,
+        prompt_text: str,
+        *,
+        timeout_seconds: float,
+        model: str | None = None,
+        reasoning_effort: str | None = None,
+    ) -> tuple[str, str]:
         try:
             proc = subprocess.Popen(
                 [self._acp_command] + self._acp_args,
@@ -527,19 +540,39 @@ class CopilotACPClient:
                     },
                 },
             )
-            session = _request(
-                "session/new",
-                {
-                    "cwd": self._acp_cwd,
-                    "mcpServers": [],
-                },
-            ) or {}
+            session_params: dict[str, Any] = {
+                "cwd": self._acp_cwd,
+                "mcpServers": [],
+            }
+            normalized_model = str(model or "").strip()
+            if normalized_model:
+                # Copilot ACP implementations that understand model hints can
+                # honor these; older implementations ignore unknown fields.
+                session_params["model"] = normalized_model
+            normalized_effort = str(reasoning_effort or "").strip().lower()
+            if normalized_effort:
+                session_params["reasoningEffort"] = normalized_effort
+                session_params["reasoning_effort"] = normalized_effort
+
+            session = _request("session/new", session_params) or {}
             session_id = str(session.get("sessionId") or "").strip()
             if not session_id:
                 raise RuntimeError("Copilot ACP did not return a sessionId.")
 
             text_parts: list[str] = []
             reasoning_parts: list[str] = []
+            prompt_payload_text = prompt_text
+            if normalized_effort:
+                if normalized_effort == "none":
+                    prompt_payload_text = (
+                        "[Hermes Copilot ACP setting: reasoning effort is disabled for this turn.]\n\n"
+                        + prompt_payload_text
+                    )
+                else:
+                    prompt_payload_text = (
+                        f"[Hermes Copilot ACP setting: use reasoning effort '{normalized_effort}' for this turn.]\n\n"
+                        + prompt_payload_text
+                    )
             _request(
                 "session/prompt",
                 {
@@ -547,7 +580,7 @@ class CopilotACPClient:
                     "prompt": [
                         {
                             "type": "text",
-                            "text": prompt_text,
+                            "text": prompt_payload_text,
                         }
                     ],
                 },
