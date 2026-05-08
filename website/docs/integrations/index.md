@@ -46,7 +46,8 @@ Hermes includes full browser automation with multiple backend options for naviga
 
 - **Browserbase** — Managed cloud browsers with anti-bot tooling, CAPTCHA solving, and residential proxies
 - **Browser Use** — Alternative cloud browser provider
-- **Local Chrome via CDP** — Connect to your running Chrome instance using `/browser connect`
+- **User Chrome via patched Chrome MCP** — Control your real signed-in Chrome with `groxaxo/mcp-chrome-patched`
+- **Local Chrome via CDP fallback** — Connect to a Chrome DevTools Protocol endpoint using `/browser connect`
 - **Local Chromium** — Headless local browser via the `agent-browser` CLI
 
 See [Browser Automation](/docs/user-guide/features/browser) for setup and usage.

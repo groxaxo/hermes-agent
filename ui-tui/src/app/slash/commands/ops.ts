@@ -139,7 +139,7 @@ export const opsCommands: SlashCommand[] = [
   },
 
   {
-    help: 'manage browser CDP connection [connect|disconnect|status]',
+    help: 'manage legacy browser CDP fallback [connect|disconnect|status]',
     name: 'browser',
     run: (arg, ctx) => {
       const [rawAction = 'status', ...rest] = arg.trim().split(/\s+/).filter(Boolean)
@@ -147,7 +147,7 @@ export const opsCommands: SlashCommand[] = [
 
       if (!['connect', 'disconnect', 'status'].includes(action)) {
         return ctx.transcript.sys(
-          'usage: /browser [connect|disconnect|status] [url] · persistent: set browser.cdp_url in config.yaml'
+          'usage: /browser [connect|disconnect|status] [url] · default real Chrome: hermes mcp add chrome --preset chrome'
         )
       }
 
@@ -155,7 +155,8 @@ export const opsCommands: SlashCommand[] = [
       const url = action === 'connect' ? rest.join(' ').trim() || 'http://127.0.0.1:9222' : undefined
 
       if (url) {
-        ctx.transcript.sys(`checking Chrome remote debugging at ${url}...`)
+        ctx.transcript.sys(`checking legacy Chrome remote debugging at ${url}...`)
+        ctx.transcript.sys('default real Chrome integration: hermes mcp add chrome --preset chrome')
       }
 
       ctx.gateway
@@ -171,8 +172,8 @@ export const opsCommands: SlashCommand[] = [
             if (action === 'status') {
               return ctx.transcript.sys(
                 r.connected
-                  ? `browser connected: ${r.url || '(url unavailable)'}`
-                  : 'browser not connected (try /browser connect <url> or set browser.cdp_url in config.yaml)'
+                  ? `browser connected via legacy CDP: ${r.url || '(url unavailable)'}`
+                  : 'browser not connected via CDP fallback (default real Chrome: hermes mcp add chrome --preset chrome)'
               )
             }
 
@@ -181,7 +182,7 @@ export const opsCommands: SlashCommand[] = [
             }
 
             if (r.connected) {
-              ctx.transcript.sys('Browser connected to live Chrome via CDP')
+              ctx.transcript.sys('Browser connected to live Chrome via legacy CDP fallback')
               ctx.transcript.sys(`Endpoint: ${r.url || '(url unavailable)'}`)
               ctx.transcript.sys('next browser tool call will use this CDP endpoint')
             }

@@ -1,6 +1,6 @@
 ---
 title: Browser Automation
-description: Control browsers with multiple providers, local Chrome via CDP, or cloud browsers for web interaction, form filling, scraping, and more.
+description: Control browsers with patched Chrome MCP, multiple cloud providers, CDP fallback, or local Chromium for web interaction, form filling, scraping, and more.
 sidebar_label: Browser
 sidebar_position: 5
 ---
@@ -13,7 +13,8 @@ Hermes Agent includes a full browser automation toolset with multiple backend op
 - **Browser Use cloud mode** via [Browser Use](https://browser-use.com) as an alternative cloud browser provider
 - **Firecrawl cloud mode** via [Firecrawl](https://firecrawl.dev) for cloud browsers with built-in scraping
 - **Camofox local mode** via [Camofox](https://github.com/jo-inc/camofox-browser) for local anti-detection browsing (Firefox-based fingerprint spoofing)
-- **Local Chrome via CDP** — connect browser tools to your own Chrome instance using `/browser connect`
+- **User Chrome via patched Chrome MCP** — the default path for controlling your real signed-in Chrome session through [groxaxo/mcp-chrome-patched](https://github.com/groxaxo/mcp-chrome-patched)
+- **Local Chrome via CDP fallback** — connect browser tools to a Chrome DevTools Protocol endpoint using `/browser connect`
 - **Local browser mode** via the `agent-browser` CLI and a local Chromium installation
 
 In all modes, the agent can navigate websites, interact with page elements, fill forms, and extract information.
@@ -25,7 +26,7 @@ Pages are represented as **accessibility trees** (text-based snapshots), making 
 Key capabilities:
 
 - **Multi-provider cloud execution** — Browserbase, Browser Use, or Firecrawl — no local browser needed
-- **Local Chrome integration** — attach to your running Chrome via CDP for hands-on browsing
+- **Real Chrome integration** — use patched Chrome MCP for your signed-in Chrome, with CDP retained as a fallback
 - **Built-in stealth** — random fingerprints, CAPTCHA solving, residential proxies (Browserbase)
 - **Session isolation** — each task gets its own browser session
 - **Automatic cleanup** — inactive sessions are closed after a timeout
@@ -239,9 +240,92 @@ Hermes derives the stable `userId` from the profile-scoped directory `~/.hermes/
 
 When Camofox runs in headed mode (with a visible browser window), it exposes a VNC port in its health check response. Hermes automatically discovers this and includes the VNC URL in navigation responses, so the agent can share a link for you to watch the browser live.
 
-### Local Chrome via CDP (`/browser connect`)
+### User Chrome via patched Chrome MCP (default)
 
-Instead of a cloud provider, you can attach Hermes browser tools to your own running Chrome instance via the Chrome DevTools Protocol (CDP). This is useful when you want to see what the agent is doing in real-time, interact with pages that require your own cookies/sessions, or avoid cloud browser costs.
+For your normal signed-in Chrome profile, Hermes' default recommendation is [groxaxo/mcp-chrome-patched](https://github.com/groxaxo/mcp-chrome-patched). This is the maintained fork/branch used by Hermes docs and presets for real user Chrome sessions.
+
+Why this is the default path:
+
+- it uses a Chrome extension plus native messaging host instead of launching a separate debug-profile Chrome
+- Hermes connects through MCP, so Chrome controls are regular `mcp_chrome_*` tools
+- Hermes ships a least-privilege preset that exposes only common navigation, reading, screenshot, click, fill, and dialog tools
+- high-risk tools such as history, bookmarks, arbitrary JavaScript, console/network capture, downloads/uploads, tab closing, and broad computer control are not exposed unless you opt into full access
+
+Install and register the bridge:
+
+```bash
+# Install the native bridge package from the patched project
+npm install -g mcp-chrome-bridge
+
+# Register the native messaging host for your Chrome profile
+mcp-chrome-bridge register
+
+# Verify that the extension, native host, and local MCP endpoint are healthy
+mcp-chrome-bridge doctor
+```
+
+Then add the safe Hermes preset:
+
+```bash
+hermes mcp add chrome --preset chrome
+```
+
+The safe preset connects to the patched bridge's default local HTTP endpoint:
+
+```yaml
+mcp_servers:
+  chrome:
+    url: "http://127.0.0.1:12306/mcp"
+    connect_timeout: 20
+    timeout: 120
+    tools:
+      include:
+        - get_windows_and_tabs
+        - chrome_switch_tab
+        - chrome_navigate
+        - chrome_screenshot
+        - chrome_read_page
+        - chrome_dismiss_cookie_banners
+        - chrome_click_element
+        - chrome_fill_or_select
+        - chrome_request_element_selection
+        - chrome_keyboard
+        - chrome_get_web_content
+        - extract_clean_content
+        - chrome_handle_dialog
+      resources: false
+      prompts: false
+```
+
+Start a new Hermes session or run `/reload-mcp`, then ask Hermes to use the Chrome MCP tools. Tool names are prefixed with your server name, for example `mcp_chrome_chrome_navigate` and `mcp_chrome_chrome_read_page`.
+
+#### Full-access Chrome MCP
+
+Only use the full preset when you intentionally want the complete patched Chrome MCP surface:
+
+```bash
+hermes mcp add chrome --preset chrome-full
+```
+
+Full access can include sensitive browser capabilities such as arbitrary JavaScript execution, network/console inspection, downloads/uploads, history/bookmark access, tab closing, and broader UI control. Treat it like giving an agent hands-on access to your logged-in browser.
+
+#### Stdio fallback
+
+The shared HTTP endpoint is preferred because it talks to the bridge process that the Chrome extension already uses. If you need stdio for a specific client or environment:
+
+```bash
+hermes mcp add chrome --preset chrome-stdio
+```
+
+The stdio preset uses the installed `mcp-chrome-stdio` binary and the same safe tool allowlist.
+
+:::warning Security model
+Patched Chrome MCP controls your real browser session. That means pages, cookies, login state, and any visible private data may be available to tools that you expose. Keep the safe preset unless you have a concrete reason to expand it, review the tool list before saving, and do not expose the local HTTP endpoint beyond your machine unless you also configure bridge authentication and firewall rules.
+:::
+
+### Local Chrome via CDP fallback (`/browser connect`)
+
+`/browser connect` remains available for existing Chrome DevTools Protocol (CDP) setups and hosted CDP providers. For your normal signed-in Chrome profile, prefer the patched Chrome MCP setup above.
 
 :::note
 `/browser connect` is an **interactive-CLI slash command** — it is not dispatched by the gateway. If you try to run it inside a WebUI, Telegram, Discord, or other gateway chat, the message will be sent to the agent as plain text and the command will not execute. Start Hermes from the terminal (`hermes` or `hermes chat`) and issue `/browser connect` there.
@@ -282,9 +366,9 @@ Then launch the Hermes CLI and run `/browser connect`.
 **Why `--user-data-dir`?** Without it, launching Chrome while a regular Chrome instance is already running typically opens a new window on the existing process — and that existing process was not started with `--remote-debugging-port`, so port 9222 never opens. A dedicated user-data-dir forces a fresh Chrome process where the debug port actually listens. `--no-first-run --no-default-browser-check` skips the first-launch wizard for the fresh profile.
 :::
 
-When connected via CDP, all browser tools (`browser_navigate`, `browser_click`, etc.) operate on your live Chrome instance instead of spinning up a cloud session.
+When connected via CDP, the native browser tools (`browser_navigate`, `browser_click`, etc.) operate on the CDP endpoint instead of spinning up a cloud session.
 
-### WSL2 + Windows Chrome: prefer MCP over `/browser connect`
+### WSL2 + Windows Chrome
 
 If Hermes runs inside WSL2 but the Chrome window you want to control runs on the Windows host, `/browser connect` is often not the best path.
 
@@ -292,13 +376,13 @@ Why:
 
 - `/browser connect` expects Hermes itself to reach a usable CDP endpoint
 - modern Chrome live-debugging sessions often expose a host-local endpoint that is not directly reachable from WSL the same way a classic `9222` port is
-- even when Windows Chrome is debuggable, the cleanest integration is often to let a Windows-side browser MCP server attach to Chrome and let Hermes talk to that MCP server
+- the patched Chrome bridge's native messaging host must be registered on the same OS/user profile as the Chrome extension
 
-For that setup, prefer `chrome-devtools-mcp` through Hermes MCP support.
+For that setup, install and run `groxaxo/mcp-chrome-patched` on Windows, then let Hermes in WSL connect to that bridge through MCP. Keep the bridge bound to localhost whenever possible. If you intentionally expose it from Windows to WSL over the network, configure the bridge's API key support and Windows Firewall so the endpoint is not reachable by other machines.
 
 See the MCP guide for the practical setup:
 
-- [Use MCP with Hermes](../../guides/use-mcp-with-hermes.md#wsl2-bridge-hermes-in-wsl-to-windows-chrome)
+- [Use MCP with Hermes](../../guides/use-mcp-with-hermes.md#wsl2-hermes-to-windows-chrome)
 
 ### Local browser mode
 

@@ -9,6 +9,7 @@ configuration in ~/.hermes/config.yaml under the ``mcp_servers`` key.
 """
 
 import asyncio
+import copy
 import logging
 import os
 import re
@@ -31,7 +32,104 @@ logger = logging.getLogger(__name__)
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
-_MCP_PRESETS: Dict[str, Dict[str, Any]] = {}
+_CHROME_MCP_SAFE_TOOLS = [
+    "get_windows_and_tabs",
+    "chrome_switch_tab",
+    "chrome_navigate",
+    "chrome_screenshot",
+    "chrome_read_page",
+    "chrome_dismiss_cookie_banners",
+    "chrome_click_element",
+    "chrome_fill_or_select",
+    "chrome_request_element_selection",
+    "chrome_keyboard",
+    "chrome_get_web_content",
+    "extract_clean_content",
+    "chrome_handle_dialog",
+]
+
+_CHROME_MCP_HTTP_URL = "http://127.0.0.1:12306/mcp"
+
+_MCP_PRESETS: Dict[str, Dict[str, Any]] = {
+    # User-owned Chrome should go through groxaxo/mcp-chrome-patched by default.
+    # The HTTP transport is the shared native-host endpoint; stdio is available
+    # as an explicit fallback for clients/environments that cannot use HTTP MCP.
+    "chrome": {
+        "display_name": "Chrome MCP (groxaxo/mcp-chrome-patched, safe default)",
+        "url": _CHROME_MCP_HTTP_URL,
+        "auth_required": False,
+        "connect_timeout": 20,
+        "timeout": 120,
+        "tools": {
+            "include": _CHROME_MCP_SAFE_TOOLS,
+            "resources": False,
+            "prompts": False,
+        },
+    },
+    "chrome-mcp-patched": {
+        "display_name": "Chrome MCP (groxaxo/mcp-chrome-patched, safe default)",
+        "url": _CHROME_MCP_HTTP_URL,
+        "auth_required": False,
+        "connect_timeout": 20,
+        "timeout": 120,
+        "tools": {
+            "include": _CHROME_MCP_SAFE_TOOLS,
+            "resources": False,
+            "prompts": False,
+        },
+    },
+    "mcp-chrome-patched": {
+        "display_name": "Chrome MCP (groxaxo/mcp-chrome-patched, safe default)",
+        "url": _CHROME_MCP_HTTP_URL,
+        "auth_required": False,
+        "connect_timeout": 20,
+        "timeout": 120,
+        "tools": {
+            "include": _CHROME_MCP_SAFE_TOOLS,
+            "resources": False,
+            "prompts": False,
+        },
+    },
+    "chrome-full": {
+        "display_name": "Chrome MCP (groxaxo/mcp-chrome-patched, full access)",
+        "url": _CHROME_MCP_HTTP_URL,
+        "auth_required": False,
+        "connect_timeout": 20,
+        "timeout": 120,
+        "tools": {
+            "resources": False,
+            "prompts": False,
+        },
+    },
+    "chrome-stdio": {
+        "display_name": "Chrome MCP stdio (mcp-chrome-stdio, safe default)",
+        "command": "mcp-chrome-stdio",
+        "connect_timeout": 20,
+        "timeout": 120,
+        "tools": {
+            "include": _CHROME_MCP_SAFE_TOOLS,
+            "resources": False,
+            "prompts": False,
+        },
+    },
+}
+
+_MCP_PRESET_CONFIG_KEYS = frozenset(
+    {
+        "url",
+        "command",
+        "args",
+        "env",
+        "headers",
+        "auth",
+        "transport",
+        "timeout",
+        "connect_timeout",
+        "tools",
+        "sampling",
+        "ssl_verify",
+    }
+)
 
 
 # ─── UI Helpers ───────────────────────────────────────────────────────────────
@@ -142,14 +240,13 @@ def _apply_mcp_preset(
     if url or command:
         return url, command, cmd_args, False
 
-    url = preset.get("url")
-    command = preset.get("command")
-    cmd_args = list(preset.get("args") or [])
+    for key in _MCP_PRESET_CONFIG_KEYS:
+        if key in preset and key != "args":
+            server_config[key] = copy.deepcopy(preset[key])
 
-    if url:
-        server_config["url"] = url
-    if command:
-        server_config["command"] = command
+    url = server_config.get("url")
+    command = server_config.get("command")
+    cmd_args = list(preset.get("args") or [])
     if cmd_args:
         server_config["args"] = cmd_args
 
@@ -233,7 +330,7 @@ def cmd_mcp_add(args):
     server_config: Dict[str, Any] = {}
     try:
         explicit_env = _parse_env_assignments(raw_env)
-        url, command, cmd_args, _preset_applied = _apply_mcp_preset(
+        url, command, cmd_args, preset_applied = _apply_mcp_preset(
             name,
             preset_name=preset_name,
             url=url,
@@ -255,6 +352,7 @@ def cmd_mcp_add(args):
         _info("Examples:")
         _info('  hermes mcp add ink --url "https://mcp.ml.ink/mcp"')
         _info('  hermes mcp add github --command npx --args @modelcontextprotocol/server-github')
+        _info('  hermes mcp add chrome --preset chrome')
         _info('  hermes mcp add myserver --preset mypreset')
         return
 
@@ -277,6 +375,10 @@ def cmd_mcp_add(args):
 
 
     # ── Authentication ────────────────────────────────────────────────
+
+    preset_auth_required = True
+    if preset_applied and preset_name in _MCP_PRESETS:
+        preset_auth_required = bool(_MCP_PRESETS[preset_name].get("auth_required", True))
 
     if url and auth_type == "oauth":
         print()
@@ -303,7 +405,7 @@ def cmd_mcp_add(args):
                 _info("Cancelled.")
                 return
 
-    elif url:
+    elif url and (auth_type == "header" or preset_auth_required):
         # Prompt for API key / Bearer token for HTTP servers
         print()
         _info(f"Connecting to {url}")
@@ -360,11 +462,17 @@ def cmd_mcp_add(args):
         print(f"    {color(tool_name, Colors.GREEN):40s} {short}")
     print()
 
-    # Ask: enable all, select, or cancel
+    preset_tool_include = server_config.get("tools", {}).get("include") or []
+    default_tool_count = len(preset_tool_include) if preset_tool_include else len(tools)
+    prompt_text = (
+        f"  Enable {default_tool_count} preset-selected tools? [Y/n/select]: "
+        if preset_tool_include
+        else f"  Enable all {len(tools)} tools? [Y/n/select]: "
+    )
+
+    # Ask: enable preset/default selection, select manually, or cancel.
     try:
-        choice = input(
-            color(f"  Enable all {len(tools)} tools? [Y/n/select]: ", Colors.YELLOW)
-        ).strip().lower()
+        choice = input(color(prompt_text, Colors.YELLOW)).strip().lower()
     except (KeyboardInterrupt, EOFError):
         print()
         _info("Cancelled.")
@@ -397,8 +505,8 @@ def cmd_mcp_add(args):
         tool_count = len(chosen_names)
         total = len(tools)
     else:
-        # Enable all (no filter needed — default behaviour)
-        tool_count = len(tools)
+        # Keep any preset tool filter; otherwise enable all reported tools.
+        tool_count = default_tool_count
         total = len(tools)
 
     # ── Save ──────────────────────────────────────────────────────────
@@ -454,6 +562,7 @@ def cmd_mcp_list(args=None):
         _info("No MCP servers configured.")
         print()
         _info("Add one with:")
+        _info('  hermes mcp add chrome --preset chrome')
         _info('  hermes mcp add <name> --url <endpoint>')
         _info('  hermes mcp add <name> --command <cmd> --args <args...>')
         print()
@@ -772,7 +881,9 @@ def mcp_command(args):
         _info("hermes mcp serve                              Run as MCP server")
         _info("hermes mcp add <name> --url <endpoint>        Add an MCP server")
         _info("hermes mcp add <name> --command <cmd>         Add a stdio server")
+        _info("hermes mcp add chrome --preset chrome         Add patched Chrome MCP")
         _info("hermes mcp add <name> --preset <preset>       Add from a known preset")
+        _info("known presets: chrome, chrome-mcp-patched, chrome-full, chrome-stdio")
         _info("hermes mcp remove <name>                      Remove a server")
         _info("hermes mcp list                               List servers")
         _info("hermes mcp test <name>                        Test connection")

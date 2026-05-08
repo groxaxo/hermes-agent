@@ -150,6 +150,86 @@ If filtering removes all server-native tools and no utility tools are registered
 
 ## Example configs
 
+### Patched Chrome MCP safe preset
+
+For a user's real signed-in Chrome session, Hermes recommends the `groxaxo/mcp-chrome-patched` preset:
+
+```bash
+hermes mcp add chrome --preset chrome
+```
+
+Equivalent config:
+
+```yaml
+mcp_servers:
+  chrome:
+    url: "http://127.0.0.1:12306/mcp"
+    connect_timeout: 20
+    timeout: 120
+    tools:
+      include:
+        - get_windows_and_tabs
+        - chrome_switch_tab
+        - chrome_navigate
+        - chrome_screenshot
+        - chrome_read_page
+        - chrome_dismiss_cookie_banners
+        - chrome_click_element
+        - chrome_fill_or_select
+        - chrome_request_element_selection
+        - chrome_keyboard
+        - chrome_get_web_content
+        - extract_clean_content
+        - chrome_handle_dialog
+      resources: false
+      prompts: false
+```
+
+The safe preset intentionally excludes high-risk tools including arbitrary JavaScript, console/network capture, history, bookmark mutation, uploads/downloads, tab closing, performance/GIF capture, and broad `chrome_computer` control.
+
+### Patched Chrome MCP full-access preset
+
+Only opt into every tool when you understand the real-browser security impact:
+
+```bash
+hermes mcp add chrome --preset chrome-full
+```
+
+Example config:
+
+```yaml
+mcp_servers:
+  chrome:
+    url: "http://127.0.0.1:12306/mcp"
+    connect_timeout: 20
+    timeout: 120
+    tools:
+      resources: false
+      prompts: false
+```
+
+### Patched Chrome MCP stdio fallback
+
+Use this only when HTTP MCP is not available:
+
+```bash
+hermes mcp add chrome --preset chrome-stdio
+```
+
+Equivalent config:
+
+```yaml
+mcp_servers:
+  chrome:
+    command: "mcp-chrome-stdio"
+    connect_timeout: 20
+    timeout: 120
+    tools:
+      include: [get_windows_and_tabs, chrome_read_page, chrome_screenshot]
+      resources: false
+      prompts: false
+```
+
 ### Safe GitHub allowlist
 
 ```yaml

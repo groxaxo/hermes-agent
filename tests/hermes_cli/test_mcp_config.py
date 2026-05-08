@@ -365,6 +365,100 @@ class TestMcpAdd:
         assert srv["args"] == ["-y", "test-mcp-server"]
         assert "env" not in srv
 
+    def test_chrome_preset_uses_http_safe_tool_policy(self, tmp_path, capsys, monkeypatch):
+        """The default patched Chrome preset uses localhost HTTP and a least-privilege tool list."""
+        from hermes_cli.mcp_config import _CHROME_MCP_HTTP_URL, cmd_mcp_add
+        from hermes_cli.config import read_raw_config
+
+        risky_tools = {
+            "chrome_network_capture",
+            "chrome_console",
+            "chrome_computer",
+            "chrome_javascript",
+            "chrome_history",
+            "chrome_upload_file",
+            "chrome_aria2_download",
+            "chrome_close_tabs",
+        }
+
+        def mock_probe(name, config, **kw):
+            assert name == "chrome"
+            assert config["url"] == _CHROME_MCP_HTTP_URL
+            assert "command" not in config
+            included = set(config["tools"]["include"])
+            assert risky_tools.isdisjoint(included)
+            assert {"chrome_navigate", "chrome_read_page", "chrome_click_element"} <= included
+            return [(tool, "tool") for tool in sorted(included | risky_tools)]
+
+        monkeypatch.setattr("hermes_cli.mcp_config._probe_single_server", mock_probe)
+        monkeypatch.setattr("builtins.input", lambda _: "")
+
+        cmd_mcp_add(_make_args(name="chrome", preset="chrome"))
+        out = capsys.readouterr().out
+        assert "(13/21 tools enabled)" in out
+        assert "Saved" in out
+
+        srv = read_raw_config()["mcp_servers"]["chrome"]
+        assert srv["url"] == _CHROME_MCP_HTTP_URL
+        assert srv["enabled"] is True
+        assert risky_tools.isdisjoint(set(srv["tools"]["include"]))
+        assert srv["tools"]["resources"] is False
+        assert srv["tools"]["prompts"] is False
+
+    def test_chrome_full_preset_keeps_all_tools_opt_in(self, tmp_path, capsys, monkeypatch):
+        """Full Chrome access is available only through an explicit preset without an include filter."""
+        from hermes_cli.mcp_config import _CHROME_MCP_HTTP_URL, cmd_mcp_add
+        from hermes_cli.config import read_raw_config
+
+        fake_tools = [
+            FakeTool("chrome_network_capture", "Capture requests"),
+            FakeTool("chrome_javascript", "Run JavaScript"),
+            FakeTool("chrome_read_page", "Read page"),
+        ]
+
+        def mock_probe(name, config, **kw):
+            assert name == "chrome"
+            assert config["url"] == _CHROME_MCP_HTTP_URL
+            assert "include" not in config["tools"]
+            return [(t.name, t.description) for t in fake_tools]
+
+        monkeypatch.setattr("hermes_cli.mcp_config._probe_single_server", mock_probe)
+        monkeypatch.setattr("builtins.input", lambda _: "")
+
+        cmd_mcp_add(_make_args(name="chrome", preset="chrome-full"))
+        out = capsys.readouterr().out
+        assert "(3/3 tools enabled)" in out
+
+        srv = read_raw_config()["mcp_servers"]["chrome"]
+        assert srv["url"] == _CHROME_MCP_HTTP_URL
+        assert "include" not in srv["tools"]
+        assert srv["tools"]["resources"] is False
+        assert srv["tools"]["prompts"] is False
+
+    def test_chrome_stdio_preset_uses_installed_binary_and_safe_policy(self, tmp_path, capsys, monkeypatch):
+        """The stdio fallback uses the installed patched bridge binary, not an npx package."""
+        from hermes_cli.mcp_config import cmd_mcp_add
+        from hermes_cli.config import read_raw_config
+
+        def mock_probe(name, config, **kw):
+            assert name == "chrome"
+            assert config["command"] == "mcp-chrome-stdio"
+            assert "args" not in config
+            assert "chrome_javascript" not in config["tools"]["include"]
+            return [(tool, "tool") for tool in config["tools"]["include"]]
+
+        monkeypatch.setattr("hermes_cli.mcp_config._probe_single_server", mock_probe)
+        monkeypatch.setattr("builtins.input", lambda _: "")
+
+        cmd_mcp_add(_make_args(name="chrome", preset="chrome-stdio"))
+        out = capsys.readouterr().out
+        assert "(13/13 tools enabled)" in out
+
+        srv = read_raw_config()["mcp_servers"]["chrome"]
+        assert srv["command"] == "mcp-chrome-stdio"
+        assert "args" not in srv
+        assert "chrome_javascript" not in srv["tools"]["include"]
+
     def test_preset_does_not_override_explicit_command(self, tmp_path, capsys, monkeypatch):
         """Explicit transports win over presets."""
         monkeypatch.setattr(
@@ -599,4 +693,3 @@ class TestMcpLogin:
         cmd_mcp_login(_make_args(name="srv"))
         out = capsys.readouterr().out
         assert "no URL" in out or "not an OAuth" in out
-

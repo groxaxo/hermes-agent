@@ -109,61 +109,128 @@ mcp_servers:
 
 This is usually the best default for sensitive systems.
 
-## WSL2: bridge Hermes in WSL to Windows Chrome
+## Default user Chrome: groxaxo/mcp-chrome-patched
 
-This is the practical setup when:
+Hermes' recommended MCP path for controlling your real signed-in Chrome session is [groxaxo/mcp-chrome-patched](https://github.com/groxaxo/mcp-chrome-patched). This is the user's own maintained fork/branch of the Chrome MCP bridge, with English documentation, Docker/native-server improvements, and a broader automation toolset than the older examples in this guide.
+
+Install the native bridge and register its Chrome native messaging host:
+
+```bash
+npm install -g mcp-chrome-bridge
+mcp-chrome-bridge register
+mcp-chrome-bridge doctor
+```
+
+Then add the safe Hermes preset:
+
+```bash
+hermes mcp add chrome --preset chrome
+```
+
+That preset points to the bridge's shared local MCP endpoint:
+
+```yaml
+mcp_servers:
+  chrome:
+    url: "http://127.0.0.1:12306/mcp"
+    connect_timeout: 20
+    timeout: 120
+    tools:
+      include:
+        - get_windows_and_tabs
+        - chrome_switch_tab
+        - chrome_navigate
+        - chrome_screenshot
+        - chrome_read_page
+        - chrome_dismiss_cookie_banners
+        - chrome_click_element
+        - chrome_fill_or_select
+        - chrome_request_element_selection
+        - chrome_keyboard
+        - chrome_get_web_content
+        - extract_clean_content
+        - chrome_handle_dialog
+      resources: false
+      prompts: false
+```
+
+The default preset intentionally does **not** expose high-risk browser tools such as arbitrary JavaScript, console/network capture, history, bookmark mutation, downloads/uploads, tab closing, broad `chrome_computer` control, or performance/GIF artifact capture.
+
+If you intentionally want every tool from the patched bridge:
+
+```bash
+hermes mcp add chrome --preset chrome-full
+```
+
+If you cannot use HTTP MCP in your environment, use the stdio fallback:
+
+```bash
+hermes mcp add chrome --preset chrome-stdio
+```
+
+The stdio fallback uses the installed `mcp-chrome-stdio` binary and keeps the same safe allowlist.
+
+:::warning Real-browser access
+Patched Chrome MCP runs against your real Chrome profile. Exposed tools can interact with logged-in sites and read visible page content. Keep the safe preset unless you need more, and do not expose the local MCP endpoint outside your machine without the bridge's API key support and firewall controls.
+:::
+
+### Typical prompt
+
+Once loaded, Hermes can use the MCP-prefixed Chrome tools directly. For example:
+
+```text
+Use the chrome MCP tools to list my current Chrome tabs, open the project dashboard, and summarize the visible errors without changing anything.
+```
+
+## WSL2: Hermes to Windows Chrome
+
+This setup applies when:
 
 - Hermes runs inside WSL2
 - the browser you want to control is your normal signed-in Chrome on Windows
 - `/browser connect` is awkward or unreliable from WSL
 
-In this setup, Hermes does **not** connect to Chrome directly. Instead:
+The patched Chrome native messaging host must be installed and registered on the same OS/user profile that runs Chrome. If Chrome runs on Windows, install `groxaxo/mcp-chrome-patched` on Windows, not only inside WSL.
+
+Recommended same-machine pattern:
 
 - Hermes runs in WSL
-- Hermes starts a local stdio MCP server
-- that MCP server is launched through Windows interop (`cmd.exe` or `powershell.exe`)
-- the MCP server attaches to your live Windows Chrome session
+- Chrome, the extension, and the native bridge run on Windows
+- Hermes connects to the bridge's MCP endpoint
+- the bridge protects any non-local exposure with an API key and Windows Firewall rules
 
 Mental model:
 
 ```text
-Hermes (WSL) -> MCP stdio bridge -> Windows Chrome
+Hermes (WSL) -> patched Chrome MCP endpoint -> Windows native host -> Windows Chrome
 ```
 
-### Why this mode is useful
+If WSL can reach the Windows bridge endpoint, add it directly:
 
-- you keep your real Windows browser profile, cookies, and logins
-- Hermes stays in its supported Unix environment (WSL2)
-- browser control is exposed as MCP tools instead of relying on Hermes core browser transport
-
-### Recommended server
-
-Use `chrome-devtools-mcp`.
-
-If your Windows Chrome already has live remote debugging enabled from `chrome://inspect/#remote-debugging`, add it like this from WSL:
-
-```bash
-hermes mcp add chrome-devtools-win --command cmd.exe --args /c "npx -y chrome-devtools-mcp@latest --autoConnect --no-usage-statistics"
+```yaml
+mcp_servers:
+  chrome:
+    url: "http://<windows-host-ip>:12306/mcp"
+    headers:
+      Authorization: "Bearer ${CHROME_MCP_API_KEY}"
+    tools:
+      include: [get_windows_and_tabs, chrome_read_page, chrome_screenshot]
+      resources: false
+      prompts: false
 ```
+
+Store `CHROME_MCP_API_KEY` in `~/.hermes/.env`, not in `config.yaml`.
 
 After saving the server:
 
 ```bash
-hermes mcp test chrome-devtools-win
+hermes mcp test chrome
 ```
 
 Then start a fresh Hermes session or run:
 
 ```text
 /reload-mcp
-```
-
-### Typical prompt
-
-Once loaded, Hermes can use the MCP-prefixed browser tools directly. For example:
-
-```text
-调用 MCP 工具 mcp_chrome_devtools_win_list_pages，列出当前浏览器标签页。
 ```
 
 ### When `/browser connect` is the wrong tool
@@ -174,15 +241,15 @@ Common reasons:
 
 - WSL cannot reach the same host-local endpoint Chrome exposes to Windows tools
 - newer Chrome live-debugging flows are not the same as a classic `ws://localhost:9222`
-- the browser is easier to attach to from a Windows-side helper like `chrome-devtools-mcp`
+- the browser is easier to attach to from a Windows-side helper such as `groxaxo/mcp-chrome-patched`
 
 In those cases, keep `/browser connect` for same-environment setups and use MCP for WSL-to-Windows browser bridging.
 
 ### Known pitfalls
 
-- Start Hermes from a Windows-mounted path like `/mnt/c/Users/<you>` or `/mnt/c/workspace/...` when using Windows stdio executables through MCP.
-- If you start Hermes from `/root` or `/home/...`, Windows may emit a `UNC` current-directory warning before the MCP server starts.
-- If `chrome-devtools-mcp --autoConnect` times out while enumerating pages, reduce background/frozen tabs in Chrome and retry.
+- Do not install the native host only inside WSL if the Chrome extension runs on Windows; native messaging registration is OS-local.
+- Do not bind the MCP endpoint to `0.0.0.0` without an API key and firewall rule.
+- Prefer the safe `chrome` preset or an explicit allowlist for WSL; full browser control over a network boundary is easy to overexpose.
 
 ### Example: blacklist dangerous actions
 

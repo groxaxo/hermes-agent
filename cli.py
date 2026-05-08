@@ -7191,7 +7191,7 @@ class HermesCLI:
         return try_launch_chrome_debug(port, system)
 
     def _handle_browser_command(self, cmd: str):
-        """Handle /browser connect|disconnect|status — manage live Chrome CDP connection."""
+        """Handle /browser connect|disconnect|status — manage legacy live Chrome CDP fallback."""
         import platform as _plat
 
         parts = cmd.strip().split(None, 1)
@@ -7243,6 +7243,9 @@ class HermesCLI:
             except Exception:
                 pass
 
+            print()
+            print("   Note: /browser connect is the legacy CDP fallback.")
+            print("   Recommended for your real Chrome session: hermes mcp add chrome --preset chrome")
             print()
 
             # Check if Chrome is already listening on the debug port
@@ -7307,15 +7310,16 @@ class HermesCLI:
             except Exception:
                 pass
             print()
-            print("🌐 Browser connected to live Chrome via CDP")
+            print("🌐 Browser connected to live Chrome via CDP fallback")
             print(f"   Endpoint: {cdp_url}")
+            print("   For the default real-Chrome path, use: hermes mcp add chrome --preset chrome")
             print()
 
             # Inject context message so the model knows
             if hasattr(self, '_pending_input'):
                 self._pending_input.put(
                     "[System note: The user has connected your browser tools to their live Chrome browser "
-                    "via Chrome DevTools Protocol. Your browser_navigate, browser_snapshot, browser_click, "
+                    "via the legacy Chrome DevTools Protocol fallback. Your browser_navigate, browser_snapshot, browser_click, "
                     "and other browser tools now control their real browser — including any pages they have "
                     "open, logged-in sessions, and cookies. They likely opened specific sites or logged into "
                     "services before connecting. Please await their instruction before attempting to operate "
@@ -7350,7 +7354,7 @@ class HermesCLI:
         elif sub == "status":
             print()
             if current:
-                print("🌐 Browser: connected to live Chrome via CDP")
+                print("🌐 Browser: connected to live Chrome via CDP fallback")
                 print(f"   Endpoint: {current}")
 
                 _port = 9222
@@ -7374,6 +7378,11 @@ class HermesCLI:
                 except Exception:
                     provider = None
 
+                print("🌐 Real Chrome default: mcp-chrome-patched")
+                print("   Set up with: hermes mcp add chrome --preset chrome")
+                print("   CDP fallback: /browser connect")
+                print()
+
                 if provider is not None:
                     print(f"🌐 Browser: {provider.provider_name()} (cloud)")
                 else:
@@ -7392,7 +7401,7 @@ class HermesCLI:
                     else:
                         print("🌐 Browser: local headless Chromium (agent-browser)")
             print()
-            print("   /browser connect      — connect to your live Chrome")
+            print("   /browser connect      — legacy CDP fallback for live Chrome")
             print("   /browser disconnect   — revert to default")
             print()
 
@@ -7400,9 +7409,12 @@ class HermesCLI:
             print()
             print("Usage: /browser connect|disconnect|status")
             print()
-            print("   connect      Connect browser tools to your live Chrome session")
+            print("   connect      Connect browser tools to live Chrome through legacy CDP")
             print("   disconnect   Revert to default browser backend")
             print("   status       Show current browser mode")
+            print()
+            print("Default real-Chrome integration:")
+            print("   hermes mcp add chrome --preset chrome")
             print()
 
     # ────────────────────────────────────────────────────────────────

@@ -38,21 +38,24 @@ curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scri
 
 ### I run Hermes in WSL2. What's the best way to control my normal Windows Chrome?
 
-Prefer an MCP bridge over `/browser connect`.
+Prefer `groxaxo/mcp-chrome-patched` over `/browser connect`.
 
 Recommended pattern:
 
 - run Hermes inside WSL2
 - keep using your normal signed-in Chrome on Windows
-- add `chrome-devtools-mcp` as an MCP server through `cmd.exe` or `powershell.exe`
+- install and register `groxaxo/mcp-chrome-patched` on Windows, where Chrome is running
+- add the Chrome MCP endpoint to Hermes with the safe `chrome` preset or an explicit allowlist
 - let Hermes use the resulting MCP browser tools
 
 This is more reliable than trying to force Hermes core browser transport to attach directly across the WSL2/Windows boundary.
 
+The patched bridge controls your real browser profile, so keep the safe preset unless you intentionally need full access. Do not expose the bridge endpoint beyond the local machine without its API key support and firewall rules.
+
 See:
 
-- [Use MCP with Hermes](../guides/use-mcp-with-hermes.md#wsl2-bridge-hermes-in-wsl-to-windows-chrome)
-- [Browser Automation](../user-guide/features/browser.md#wsl2--windows-chrome-prefer-mcp-over-browser-connect)
+- [Use MCP with Hermes](../guides/use-mcp-with-hermes.md#wsl2-hermes-to-windows-chrome)
+- [Browser Automation](../user-guide/features/browser.md#wsl2--windows-chrome)
 
 ### Does it work on Android / Termux?
 
