@@ -70,3 +70,10 @@ mini-swe-agent/
 result
 website/static/api/skills-index.json
 models-dev-upstream/
+
+# Trajectory / training-data files written to CWD by save_trajectories and save_sample.
+# These may contain redacted secrets and should never be committed.
+trajectory_samples.jsonl
+failed_trajectories.jsonl
+sample_*.json
+batch_*.jsonl

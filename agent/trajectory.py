@@ -10,7 +10,29 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, List
 
+from agent.redact import redact_sensitive_text
+
 logger = logging.getLogger(__name__)
+
+
+def redact_trajectory_entry(obj: Any) -> Any:
+    """Recursively redact sensitive strings throughout a trajectory entry.
+
+    Walks the full object tree so that secrets in nested dicts, lists, or
+    unexpected fields (e.g. "query", "metadata", tool arguments) are masked
+    before the entry is persisted to disk.
+
+    Uses ``force=True`` because trajectory files are durable on-disk
+    artefacts — they must never contain raw secrets regardless of the
+    user's global redaction preference.
+    """
+    if isinstance(obj, str):
+        return redact_sensitive_text(obj, force=True)
+    if isinstance(obj, list):
+        return [redact_trajectory_entry(item) for item in obj]
+    if isinstance(obj, dict):
+        return {k: redact_trajectory_entry(v) for k, v in obj.items()}
+    return obj
 
 
 def convert_scratchpad_to_think(content: str) -> str:
@@ -50,7 +72,7 @@ def save_trajectory(trajectory: List[Dict[str, Any]], model: str,
 
     try:
         with open(filename, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            f.write(json.dumps(redact_trajectory_entry(entry), ensure_ascii=False) + "\n")
         logger.info("Trajectory saved to %s", filename)
     except Exception as e:
         logger.warning("Failed to save trajectory: %s", e)

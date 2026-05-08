@@ -36,6 +36,7 @@ logger = logging.getLogger(__name__)
 import fire
 
 from run_agent import AIAgent
+from agent.trajectory import redact_trajectory_entry
 from toolset_distributions import (
     list_distributions, 
     sample_toolsets_from_distribution,
@@ -472,7 +473,7 @@ def _process_batch_worker(args: Tuple) -> Dict[str, Any]:
             
             # Append to batch output file
             with open(batch_output_file, 'a', encoding='utf-8') as f:
-                f.write(json.dumps(trajectory_entry, ensure_ascii=False) + "\n")
+                f.write(json.dumps(redact_trajectory_entry(trajectory_entry), ensure_ascii=False) + "\n")
         
         # Aggregate tool statistics
         for tool_name, stats in result.get("tool_stats", {}).items():

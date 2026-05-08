@@ -172,6 +172,7 @@ from agent.tool_guardrails import (
 )
 from agent.trajectory import (
     convert_scratchpad_to_think, has_incomplete_scratchpad,
+    redact_trajectory_entry,
     save_trajectory as _save_trajectory_to_file,
 )
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname, env_var_enabled, normalize_proxy_url
@@ -14653,7 +14654,7 @@ def main(
         try:
             with open(sample_filename, "w", encoding="utf-8") as f:
                 # Pretty-print JSON with indent for readability
-                f.write(json.dumps(entry, ensure_ascii=False, indent=2))
+                f.write(json.dumps(redact_trajectory_entry(entry), ensure_ascii=False, indent=2))
             print(f"\n💾 Sample trajectory saved to: {sample_filename}")
         except Exception as e:
             print(f"\n⚠️ Failed to save sample: {e}")
