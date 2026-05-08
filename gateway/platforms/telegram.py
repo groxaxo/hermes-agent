@@ -373,7 +373,29 @@ class TelegramAdapter(BasePlatformAdapter):
         if not allowed_csv:
             return True
         allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
-        return "*" in allowed_ids or normalized_user_id in allowed_ids
+        if "*" in allowed_ids:
+            return True
+
+        normalized_allowed_ids = set()
+        for allowed_id in allowed_ids:
+            normalized_allowed_ids.add(allowed_id)
+            stripped_allowed_id = allowed_id.lstrip("@")
+            if stripped_allowed_id:
+                normalized_allowed_ids.add(stripped_allowed_id)
+                normalized_allowed_ids.add(stripped_allowed_id.lower())
+            normalized_allowed_ids.add(allowed_id.lower())
+
+        check_ids = {normalized_user_id}
+        normalized_user_name = str(user_name or "").strip()
+        if normalized_user_name:
+            check_ids.add(normalized_user_name)
+            stripped_user_name = normalized_user_name.lstrip("@")
+            if stripped_user_name:
+                check_ids.add(stripped_user_name)
+                check_ids.add(stripped_user_name.lower())
+            check_ids.add(normalized_user_name.lower())
+
+        return bool(check_ids & normalized_allowed_ids)
 
     @classmethod
     def _metadata_thread_id(cls, metadata: Optional[Dict[str, Any]]) -> Optional[str]:
@@ -1944,7 +1966,11 @@ class TelegramAdapter(BasePlatformAdapter):
         query_chat = getattr(query_message, "chat", None)
         query_chat_type = getattr(query_chat, "type", None)
         query_thread_id = getattr(query_message, "message_thread_id", None)
-        query_user_name = getattr(query.from_user, "first_name", None)
+        query_user_name = (
+            getattr(query.from_user, "username", None)
+            or getattr(query.from_user, "full_name", None)
+            or getattr(query.from_user, "first_name", None)
+        )
 
         # --- Model picker callbacks ---
         if data.startswith(("mp:", "mm:", "mb", "mx", "mg:")):
@@ -3682,7 +3708,11 @@ class TelegramAdapter(BasePlatformAdapter):
             chat_name=chat.title or (chat.full_name if hasattr(chat, "full_name") else None),
             chat_type=chat_type,
             user_id=str(user.id) if user else (str(chat.id) if chat_type == "dm" else None),
-            user_name=user.full_name if user else (chat.full_name if hasattr(chat, "full_name") and chat_type == "dm" else None),
+            user_name=(
+                (user.username or user.full_name)
+                if user
+                else (chat.full_name if hasattr(chat, "full_name") and chat_type == "dm" else None)
+            ),
             thread_id=thread_id_str,
             chat_topic=chat_topic,
         )

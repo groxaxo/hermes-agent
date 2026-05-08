@@ -4756,6 +4756,12 @@ class GatewayRunner:
         check_ids = {user_id}
         if "@" in user_id:
             check_ids.add(user_id.split("@")[0])
+        user_name = str(getattr(source, "user_name", "") or "").strip()
+        if user_name:
+            check_ids.add(user_name)
+            stripped_user_name = user_name.lstrip("@")
+            if stripped_user_name:
+                check_ids.add(stripped_user_name)
 
         # WhatsApp: resolve phone↔LID aliases from bridge session mapping files
         if source.platform == Platform.WHATSAPP:
@@ -4769,6 +4775,34 @@ class GatewayRunner:
             normalized_user_id = _normalize_whatsapp_identifier(user_id)
             if normalized_user_id:
                 check_ids.add(normalized_user_id)
+
+        if source.platform == Platform.TELEGRAM:
+            normalized_allowed_ids = set()
+            for allowed_id in allowed_ids:
+                allowed_id_str = str(allowed_id).strip()
+                if not allowed_id_str:
+                    continue
+                normalized_allowed_ids.add(allowed_id_str)
+                stripped_allowed_id = allowed_id_str.lstrip("@")
+                if stripped_allowed_id:
+                    normalized_allowed_ids.add(stripped_allowed_id)
+                    normalized_allowed_ids.add(stripped_allowed_id.lower())
+                normalized_allowed_ids.add(allowed_id_str.lower())
+            if normalized_allowed_ids:
+                allowed_ids = normalized_allowed_ids
+
+            normalized_check_ids = set()
+            for check_id in check_ids:
+                check_id_str = str(check_id).strip()
+                if not check_id_str:
+                    continue
+                normalized_check_ids.add(check_id_str)
+                stripped_check_id = check_id_str.lstrip("@")
+                if stripped_check_id:
+                    normalized_check_ids.add(stripped_check_id)
+                    normalized_check_ids.add(stripped_check_id.lower())
+                normalized_check_ids.add(check_id_str.lower())
+            check_ids = normalized_check_ids
 
         return bool(check_ids & allowed_ids)
 

@@ -140,6 +140,26 @@ def test_star_wildcard_works_for_any_platform(monkeypatch):
     assert runner._is_user_authorized(source) is True
 
 
+def test_telegram_username_allowlist_authorizes_matching_username(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "grox4xo")
+
+    runner, _adapter = _make_runner(
+        Platform.TELEGRAM,
+        GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="t")}),
+    )
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        user_id="6025513237",
+        chat_id="6025513237",
+        user_name="Grox4Xo",
+        chat_type="dm",
+    )
+
+    assert runner._is_user_authorized(source) is True
+
+
 def test_qq_group_allowlist_authorizes_group_chat_without_user_allowlist(monkeypatch):
     _clear_auth_env(monkeypatch)
     monkeypatch.setenv("QQ_GROUP_ALLOWED_USERS", "group-openid-1")
