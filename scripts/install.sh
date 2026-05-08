@@ -6,7 +6,7 @@
 # Uses uv for desktop/server installs and Python's stdlib venv + pip on Termux.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/groxaxo/hermes-agent/main/scripts/install.sh | bash
 #
 # Or with options:
 #   curl -fsSL ... | bash -s -- --no-venv --skip-setup
@@ -43,8 +43,11 @@ NC='\033[0m' # No Color
 BOLD='\033[1m'
 
 # Configuration
-REPO_URL_SSH="git@github.com:NousResearch/hermes-agent.git"
-REPO_URL_HTTPS="https://github.com/NousResearch/hermes-agent.git"
+REPO_OWNER="${HERMES_REPO_OWNER:-groxaxo}"
+REPO_NAME="${HERMES_REPO_NAME:-hermes-agent}"
+REPO_URL_SSH="git@github.com:${REPO_OWNER}/${REPO_NAME}.git"
+REPO_URL_HTTPS="https://github.com/${REPO_OWNER}/${REPO_NAME}.git"
+RAW_SCRIPT_BASE_URL="https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/main/scripts"
 HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 # INSTALL_DIR is resolved AFTER arg parsing and OS detection so we can pick an
 # FHS-style layout for root installs.  Track whether the user gave us an
@@ -68,7 +71,7 @@ ROOT_FHS_LAYOUT=false
 # Options
 USE_VENV=true
 RUN_SETUP=true
-BRANCH="main"
+BRANCH="${HERMES_INSTALL_BRANCH:-main}"
 
 # Detect non-interactive mode (e.g. curl | bash)
 # When stdin is not a terminal, read -p will fail with EOF,
@@ -119,6 +122,7 @@ while [[ $# -gt 0 ]]; do
             echo "  -h, --help     Show this help"
             echo ""
             echo "Notes:"
+            echo "  Default repo: ${REPO_OWNER}/${REPO_NAME}"
             echo "  When running as root on Linux, Hermes installs the code under"
             echo "  /usr/local/lib/hermes-agent and links the command into"
             echo "  /usr/local/bin/hermes (FHS layout — matches Claude Code / Codex CLI)."
@@ -314,7 +318,7 @@ detect_os() {
             OS="windows"
             DISTRO="windows"
             log_error "Windows detected. Please use the PowerShell installer:"
-            log_info "  irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1 | iex"
+            log_info "  irm ${RAW_SCRIPT_BASE_URL}/install.ps1 | iex"
             exit 1
             ;;
         *)
@@ -959,6 +963,10 @@ setup_venv() {
 
     # uv creates the venv and pins the Python version in one step
     $UV_CMD venv venv --python "$PYTHON_VERSION"
+
+    if ! ./venv/bin/python -m pip --version >/dev/null 2>&1; then
+        ./venv/bin/python -m ensurepip --upgrade >/dev/null 2>&1 || true
+    fi
 
     log_success "Virtual environment ready (Python $PYTHON_VERSION)"
 }

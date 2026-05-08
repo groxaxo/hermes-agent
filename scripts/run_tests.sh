@@ -41,6 +41,12 @@ fi
 
 PYTHON="$VENV/bin/python"
 
+# ── Ensure pip exists (fresh uv-created venvs may be unseeded) ─────────────────
+if ! "$PYTHON" -m pip --version >/dev/null 2>&1; then
+  echo "→ bootstrapping pip into $VENV"
+  "$PYTHON" -m ensurepip --upgrade >/dev/null
+fi
+
 # ── Ensure pytest-split is installed (required for shard-equivalent runs) ──
 if ! "$PYTHON" -c "import pytest_split" 2>/dev/null; then
   echo "→ installing pytest-split into $VENV"

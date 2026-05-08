@@ -79,6 +79,7 @@ RUN chmod -R a+rX /opt/hermes && \
 
 # ---------- Python virtualenv ----------
 RUN uv venv && \
+    .venv/bin/python -m ensurepip --upgrade >/dev/null 2>&1 || true && \
     uv pip install --no-cache-dir -e ".[all]"
 
 # ---------- Runtime ----------

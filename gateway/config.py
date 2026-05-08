@@ -11,6 +11,7 @@ Handles loading and validating configuration for:
 import logging
 import os
 import json
+import re
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any, Callable
@@ -20,6 +21,8 @@ from hermes_cli.config import get_hermes_home
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
+
+_TELEGRAM_CHAT_ID_RE = re.compile(r"^-?\d+$")
 
 
 def _coerce_bool(value: Any, default: bool = True) -> bool:
@@ -63,6 +66,13 @@ def _normalize_unauthorized_dm_behavior(value: Any, default: str = "pair") -> st
         if normalized in {"pair", "ignore"}:
             return normalized
     return default
+
+
+def _is_valid_telegram_chat_target(value: str) -> bool:
+    target = str(value).strip()
+    return bool(target) and (
+        bool(_TELEGRAM_CHAT_ID_RE.fullmatch(target)) or target.startswith("@")
+    )
 
 
 def _normalize_notice_delivery(value: Any, default: str = "public") -> str:
@@ -1160,12 +1170,19 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
 
     telegram_home = os.getenv("TELEGRAM_HOME_CHANNEL")
     if telegram_home and Platform.TELEGRAM in config.platforms:
-        config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
-            platform=Platform.TELEGRAM,
-            chat_id=telegram_home,
-            name=os.getenv("TELEGRAM_HOME_CHANNEL_NAME", "Home"),
-            thread_id=os.getenv("TELEGRAM_HOME_CHANNEL_THREAD_ID") or None,
-        )
+        if _is_valid_telegram_chat_target(telegram_home):
+            config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+                platform=Platform.TELEGRAM,
+                chat_id=telegram_home,
+                name=os.getenv("TELEGRAM_HOME_CHANNEL_NAME", "Home"),
+                thread_id=os.getenv("TELEGRAM_HOME_CHANNEL_THREAD_ID") or None,
+            )
+        else:
+            logger.error(
+                "Invalid TELEGRAM_HOME_CHANNEL=%r. Use a numeric chat ID for a DM/group/supergroup "
+                "or @channelusername for a public channel. Telegram bots cannot message a user by @username.",
+                telegram_home,
+            )
     
     # Discord
     discord_token = os.getenv("DISCORD_BOT_TOKEN")

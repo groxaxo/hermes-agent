@@ -161,6 +161,10 @@ fi
 export VIRTUAL_ENV="$SCRIPT_DIR/venv"
 SETUP_PYTHON="$SCRIPT_DIR/venv/bin/python"
 
+if ! "$SETUP_PYTHON" -m pip --version >/dev/null 2>&1; then
+    "$SETUP_PYTHON" -m ensurepip --upgrade >/dev/null 2>&1 || true
+fi
+
 # ============================================================================
 # Dependencies
 # ============================================================================

@@ -22,6 +22,19 @@ from hermes_cli.vercel_auth import describe_vercel_auth
 from hermes_constants import OPENROUTER_MODELS_URL
 from tools.tool_backend_helpers import managed_nous_tools_enabled
 
+
+def _format_home_channel_status(platform_name: str, home_channel: str) -> str:
+    """Render home-channel status, flagging invalid Telegram values clearly."""
+    if not home_channel:
+        return ""
+    if platform_name == "Telegram":
+        normalized = home_channel.strip()
+        is_valid = normalized.startswith("@") or normalized.lstrip("-").isdigit()
+        if not is_valid:
+            return " (home: invalid — use numeric chat ID or @channelusername)"
+    return f" (home: {home_channel})"
+
+
 def check_mark(ok: bool) -> str:
     if ok:
         return color("✓", Colors.GREEN)
@@ -418,8 +431,7 @@ def show_status(args):
             home_channel = os.getenv("QQ_HOME_CHANNEL", "")
         
         status = "configured" if has_token else "not configured"
-        if home_channel:
-            status += f" (home: {home_channel})"
+        status += _format_home_channel_status(name, home_channel)
         
         print(f"  {name:<12}  {check_mark(has_token)} {status}")
 
