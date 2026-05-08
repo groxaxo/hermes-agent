@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import urllib.request
 import urllib.error
 import time
@@ -100,15 +101,77 @@ VERCEL_AI_GATEWAY_MODELS: list[tuple[str, str]] = [
 _ai_gateway_catalog_cache: list[tuple[str, str]] | None = None
 
 
-def _codex_curated_models() -> list[str]:
-    """Derive the openai-codex curated list from codex_models.py.
+def _dedupe_model_ids(*groups: list[str]) -> list[str]:
+    """Return model IDs from each group with case-insensitive de-duplication."""
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for group in groups:
+        for raw in group:
+            model_id = str(raw or "").strip()
+            if not model_id:
+                continue
+            key = model_id.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            ordered.append(model_id)
+    return ordered
 
-    Single source of truth: DEFAULT_CODEX_MODELS + forward-compat synthesis.
-    This keeps the gateway /model picker in sync with the CLI `hermes model`
-    flow without maintaining a separate static list.
+
+def _fetch_opencode_model_ids(
+    provider: str,
+    *,
+    strip_provider_prefix: bool = True,
+    timeout: float = 5.0,
+) -> list[str]:
+    """Best-effort model discovery via ``opencode models <provider>``.
+
+    OpenCode already maintains provider-specific dynamic catalogs for OpenAI
+    and GitHub Copilot.  Use it as an optional source when installed so Hermes
+    surfaces newly released Codex/Copilot models (for example codex-spark)
+    without waiting for a Hermes release.
+    """
+    provider = str(provider or "").strip()
+    if not provider:
+        return []
+    try:
+        proc = subprocess.run(
+            ["opencode", "models", provider],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except Exception:
+        return []
+    if proc.returncode != 0:
+        return []
+
+    prefix = f"{provider}/"
+    models: list[str] = []
+    for line in proc.stdout.splitlines():
+        model_id = line.strip()
+        if not model_id or model_id.startswith(("Usage:", "Commands:", "Options:")):
+            continue
+        if strip_provider_prefix and model_id.startswith(prefix):
+            model_id = model_id[len(prefix):]
+        models.append(model_id)
+    return _dedupe_model_ids(models)
+
+
+def _codex_curated_models() -> list[str]:
+    """Derive the openai-codex curated list from Codex + OpenCode catalogs.
+
+    Single source of truth: DEFAULT_CODEX_MODELS + forward-compat synthesis,
+    augmented by OpenCode's dynamic OpenAI catalog when available.  This keeps
+    the gateway /model picker in sync with both the CLI `hermes model` flow and
+    newly published Codex variants such as codex-spark.
     """
     from hermes_cli.codex_models import DEFAULT_CODEX_MODELS, _add_forward_compat_models
-    return _add_forward_compat_models(list(DEFAULT_CODEX_MODELS))
+
+    opencode_models = _fetch_opencode_model_ids("openai")
+    return _add_forward_compat_models(_dedupe_model_ids(opencode_models, list(DEFAULT_CODEX_MODELS)))
 
 
 # Static fallback for xAI when the models.dev disk cache is empty (fresh
@@ -1730,8 +1793,8 @@ def provider_label(provider: Optional[str]) -> str:
 # is assumed to support Priority Processing. service_tier=priority is silently
 # ignored by non-OpenAI endpoints (OpenRouter/Copilot/opencode-zen proxies
 # strip the field), so false positives are harmless. Codex-series models
-# (gpt-5-codex, gpt-5.3-codex, etc.) are excluded — they don't expose the
-# service_tier parameter through the Codex Responses API.
+# (gpt-5-codex, gpt-5.3-codex, etc.) are included so OpenAI Codex and
+# GitHub Copilot Codex routes can opt into priority/fast processing.
 _OPENAI_FAST_MODE_PREFIXES: tuple[str, ...] = (
     "gpt-",
     "o1",
@@ -1745,10 +1808,6 @@ def _is_openai_fast_model(model_id: Optional[str]) -> bool:
     raw = _strip_vendor_prefix(str(model_id or ""))
     base = raw.split(":")[0]
     if not base:
-        return False
-    # Exclude Codex-series — they route through the Codex Responses API
-    # which doesn't accept service_tier.
-    if "codex" in base:
         return False
     return any(base.startswith(prefix) for prefix in _OPENAI_FAST_MODE_PREFIXES)
 
@@ -1951,7 +2010,7 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
     if normalized == "openrouter":
         return model_ids(force_refresh=force_refresh)
     if normalized == "openai-codex":
-        from hermes_cli.codex_models import get_codex_model_ids
+        from hermes_cli.codex_models import _add_forward_compat_models, get_codex_model_ids
 
         # Pass the live OAuth access token so the picker matches whatever
         # ChatGPT lists for this account right now (new models appear without
@@ -1965,16 +2024,22 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             access_token = creds.get("api_key")
         except Exception:
             access_token = None
-        return get_codex_model_ids(access_token=access_token)
+        codex_models = get_codex_model_ids(access_token=access_token)
+        opencode_models = _fetch_opencode_model_ids("openai")
+        return _add_forward_compat_models(_dedupe_model_ids(opencode_models, codex_models))
     if normalized in {"copilot", "copilot-acp"}:
+        live: list[str] = []
         try:
-            live = _fetch_github_models(_resolve_copilot_catalog_api_key())
-            if live:
-                return live
+            live = _fetch_github_models(_resolve_copilot_catalog_api_key()) or []
         except Exception:
-            pass
+            live = []
+        opencode_models = _fetch_opencode_model_ids("github-copilot")
+        fallback = list(_PROVIDER_MODELS.get("copilot", []))
+        merged = _dedupe_model_ids(live, opencode_models, fallback)
+        if merged:
+            return merged
         if normalized == "copilot-acp":
-            return list(_PROVIDER_MODELS.get("copilot", []))
+            return fallback
     if normalized == "nous":
         # Try live Nous Portal /models endpoint
         try:

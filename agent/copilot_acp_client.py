@@ -363,6 +363,7 @@ class CopilotACPClient:
         tool_choice: Any = None,
         reasoning_effort: str | None = None,
         reasoning: dict[str, Any] | None = None,
+        service_tier: str | None = None,
         **_: Any,
     ) -> Any:
         if not reasoning_effort and isinstance(reasoning, dict):
@@ -394,6 +395,7 @@ class CopilotACPClient:
             timeout_seconds=_effective_timeout,
             model=model,
             reasoning_effort=reasoning_effort,
+            service_tier=service_tier,
         )
 
         tool_calls, cleaned_text = _extract_tool_calls_from_text(response_text)
@@ -426,6 +428,7 @@ class CopilotACPClient:
         timeout_seconds: float,
         model: str | None = None,
         reasoning_effort: str | None = None,
+        service_tier: str | None = None,
     ) -> tuple[str, str]:
         try:
             proc = subprocess.Popen(
@@ -553,6 +556,10 @@ class CopilotACPClient:
             if normalized_effort:
                 session_params["reasoningEffort"] = normalized_effort
                 session_params["reasoning_effort"] = normalized_effort
+            normalized_service_tier = str(service_tier or "").strip().lower()
+            if normalized_service_tier:
+                session_params["serviceTier"] = normalized_service_tier
+                session_params["service_tier"] = normalized_service_tier
 
             session = _request("session/new", session_params) or {}
             session_id = str(session.get("sessionId") or "").strip()
@@ -573,6 +580,11 @@ class CopilotACPClient:
                         f"[Hermes Copilot ACP setting: use reasoning effort '{normalized_effort}' for this turn.]\n\n"
                         + prompt_payload_text
                     )
+            if normalized_service_tier:
+                prompt_payload_text = (
+                    f"[Hermes Copilot ACP setting: use service tier '{normalized_service_tier}' for this turn.]\n\n"
+                    + prompt_payload_text
+                )
             _request(
                 "session/prompt",
                 {

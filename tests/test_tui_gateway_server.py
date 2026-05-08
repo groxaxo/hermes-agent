@@ -1595,6 +1595,27 @@ def test_config_set_reasoning_updates_live_session_and_agent(tmp_path, monkeypat
     assert server._load_cfg()["display"]["sections"]["thinking"] == "hidden"
 
 
+def test_config_set_reasoning_cycles_live_effort(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    agent = types.SimpleNamespace(reasoning_config={"enabled": True, "effort": "low"})
+    emits = []
+    monkeypatch.setattr(server, "_emit", lambda *args: emits.append(args))
+    server._sessions["sid"] = _session(agent=agent)
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "config.set",
+            "params": {"session_id": "sid", "key": "reasoning", "value": "cycle"},
+        }
+    )
+
+    assert resp["result"]["value"] == "medium"
+    assert agent.reasoning_config == {"enabled": True, "effort": "medium"}
+    assert server._load_cfg()["agent"]["reasoning_effort"] == "medium"
+    assert any(event[0] == "session.info" and event[1] == "sid" for event in emits)
+
+
 def test_config_set_verbose_updates_session_mode_and_agent(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     agent = types.SimpleNamespace(verbose_logging=False)

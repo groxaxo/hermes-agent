@@ -13,19 +13,29 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_CODEX_MODELS: List[str] = [
     "gpt-5.5",
+    "gpt-5.5-fast",
     "gpt-5.4-mini",
+    "gpt-5.4-mini-fast",
     "gpt-5.4",
+    "gpt-5.4-fast",
     "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
     "gpt-5.2-codex",
     "gpt-5.1-codex-max",
     "gpt-5.1-codex-mini",
+    "gpt-5.1-codex",
+    "gpt-5-codex",
 ]
 
 _FORWARD_COMPAT_TEMPLATE_MODELS: List[tuple[str, tuple[str, ...]]] = [
     ("gpt-5.5", ("gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex")),
+    ("gpt-5.5-fast", ("gpt-5.5", "gpt-5.4-fast")),
     ("gpt-5.4-mini", ("gpt-5.3-codex", "gpt-5.2-codex")),
+    ("gpt-5.4-mini-fast", ("gpt-5.4-mini", "gpt-5.4-fast")),
     ("gpt-5.4", ("gpt-5.3-codex", "gpt-5.2-codex")),
+    ("gpt-5.4-fast", ("gpt-5.4", "gpt-5.3-codex")),
     ("gpt-5.3-codex", ("gpt-5.2-codex",)),
+    ("gpt-5.3-codex-spark", ("gpt-5.3-codex", "gpt-5.2-codex")),
 ]
 
 

@@ -467,6 +467,23 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       })
     }
 
+    // Ctrl+T cycles reasoning effort without spending a turn (OpenCode parity).
+    if (isCtrl(key, ch, 't') && !cState.completions.length) {
+      if (!live.sid) {
+        return void actions.sys('reasoning effort needs an active session')
+      }
+
+      return void gateway.rpc<ConfigSetResponse>('config.set', { key: 'reasoning', value: 'cycle', session_id: live.sid }).then(r => {
+        if (r?.value) {
+          return actions.sys(`reasoning effort: ${r.value}`)
+        }
+
+        if (r) {
+          actions.sys('failed to cycle reasoning effort')
+        }
+      })
+    }
+
     // shift-tab flips yolo without spending a turn (claude-code parity)
     if (key.shift && key.tab && !cState.completions.length) {
       if (!live.sid) {

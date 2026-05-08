@@ -156,12 +156,12 @@ class TestPriorityProcessingModels(unittest.TestCase):
                 f"speed=fast to Opus 4.6"
             )
 
-    def test_codex_models_excluded(self):
-        """Codex models route through Responses API and don't accept service_tier."""
+    def test_codex_models_supported(self):
+        """Codex models can opt into /fast priority handling too."""
         from hermes_cli.models import model_supports_fast_mode
 
-        for model in ["gpt-5-codex", "gpt-5.2-codex", "gpt-5.3-codex", "gpt-5.1-codex-max"]:
-            assert not model_supports_fast_mode(model), f"{model} is codex — should not expose /fast"
+        for model in ["gpt-5-codex", "gpt-5.2-codex", "gpt-5.3-codex", "gpt-5.3-codex-spark", "gpt-5.1-codex-max"]:
+            assert model_supports_fast_mode(model), f"{model} is codex — should expose /fast"
 
     def test_vendor_prefix_stripped(self):
         from hermes_cli.models import model_supports_fast_mode
@@ -173,11 +173,6 @@ class TestPriorityProcessingModels(unittest.TestCase):
     def test_non_priority_models_rejected(self):
         from hermes_cli.models import model_supports_fast_mode
 
-        # Codex-series models route through the Codex Responses API and
-        # don't accept service_tier, so they're excluded.
-        assert model_supports_fast_mode("gpt-5.3-codex") is False
-        assert model_supports_fast_mode("gpt-5.2-codex") is False
-        assert model_supports_fast_mode("gpt-5-codex") is False
         # Non-OpenAI, non-Anthropic models
         assert model_supports_fast_mode("gemini-3-pro-preview") is False
         assert model_supports_fast_mode("kimi-k2-thinking") is False
@@ -197,7 +192,7 @@ class TestPriorityProcessingModels(unittest.TestCase):
     def test_resolve_overrides_none_for_unsupported(self):
         from hermes_cli.models import resolve_fast_mode_overrides
 
-        assert resolve_fast_mode_overrides("gpt-5.3-codex") is None
+        assert resolve_fast_mode_overrides("gpt-5.3-codex") == {"service_tier": "priority"}
         assert resolve_fast_mode_overrides("gemini-3-pro-preview") is None
         assert resolve_fast_mode_overrides("kimi-k2-thinking") is None
 
@@ -240,7 +235,7 @@ class TestFastModeRouting(unittest.TestCase):
         # But request_overrides should be set
         assert route["request_overrides"] == {"service_tier": "priority"}
 
-    def test_turn_route_keeps_primary_runtime_when_model_has_no_fast_backend(self):
+    def test_turn_route_injects_overrides_for_codex_models_too(self):
         cli_mod = _import_cli()
         stub = SimpleNamespace(
             model="gpt-5.3-codex",
@@ -257,7 +252,7 @@ class TestFastModeRouting(unittest.TestCase):
         route = cli_mod.HermesCLI._resolve_turn_agent_config(stub, "hi")
 
         assert route["runtime"]["provider"] == "openrouter"
-        assert route.get("request_overrides") is None
+        assert route.get("request_overrides") == {"service_tier": "priority"}
 
 
 class TestAnthropicFastMode(unittest.TestCase):

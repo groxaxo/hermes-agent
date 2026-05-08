@@ -3792,12 +3792,35 @@ def _(rid, params: dict) -> dict:
                     session["show_reasoning"] = False
                 return _ok(rid, {"key": key, "value": "hide"})
 
+            if arg in ("", "cycle"):
+                cycle = ["minimal", "low", "medium", "high", "xhigh"]
+                current = ""
+                agent = session.get("agent") if session else None
+                reasoning_config = getattr(agent, "reasoning_config", None) if agent is not None else _load_reasoning_config()
+                if isinstance(reasoning_config, dict):
+                    if reasoning_config.get("enabled") is False:
+                        current = "none"
+                    else:
+                        current = str(reasoning_config.get("effort") or "").strip().lower()
+                if not current:
+                    current = str(((_load_cfg().get("agent") or {}).get("reasoning_effort", "")) or "").strip().lower()
+                try:
+                    next_idx = (cycle.index(current) + 1) % len(cycle)
+                except ValueError:
+                    next_idx = cycle.index("high")
+                arg = cycle[next_idx]
+
             parsed = parse_reasoning_effort(arg)
             if parsed is None:
                 return _err(rid, 4002, f"unknown reasoning value: {value}")
             _write_config_key("agent.reasoning_effort", arg)
             if session and session.get("agent") is not None:
                 session["agent"].reasoning_config = parsed
+                _emit(
+                    "session.info",
+                    params.get("session_id", ""),
+                    _session_info(session["agent"]),
+                )
             return _ok(rid, {"key": key, "value": arg})
         except Exception as e:
             return _err(rid, 5001, str(e))
