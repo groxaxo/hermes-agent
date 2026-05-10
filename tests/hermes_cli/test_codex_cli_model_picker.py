@@ -75,6 +75,36 @@ def test_normal_path_still_works(hermes_auth_only_env):
     assert "openai-codex" in slugs
 
 
+def test_telegram_picker_uses_dynamic_codex_catalog(hermes_auth_only_env, monkeypatch):
+    """Interactive pickers should surface the live Codex catalog, not the static snapshot."""
+    from hermes_cli.model_switch import list_picker_providers
+    from hermes_cli import models as models_mod
+
+    live_models = [
+        "gpt-5.3-codex-spark",
+        "gpt-5.4",
+        "gpt-5.4-mini",
+    ]
+    original_provider_model_ids = models_mod.provider_model_ids
+
+    def _fake_provider_model_ids(provider, **_kwargs):
+        if provider == "openai-codex":
+            return list(live_models)
+        return original_provider_model_ids(provider, **_kwargs)
+
+    monkeypatch.setattr("hermes_cli.models.provider_model_ids", _fake_provider_model_ids)
+
+    providers = list_picker_providers(
+        current_provider="openai-codex",
+        max_models=2,
+    )
+
+    codex = next(p for p in providers if p["slug"] == "openai-codex")
+    assert codex["is_current"] is True
+    assert codex["models"] == live_models[:2]
+    assert codex["total_models"] == len(live_models)
+
+
 @pytest.fixture()
 def claude_code_only_env(tmp_path, monkeypatch):
     """Set up an environment where Anthropic credentials only exist in

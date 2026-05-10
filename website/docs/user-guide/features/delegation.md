@@ -142,6 +142,63 @@ delegation:
 
 If omitted, subagents use the same model as the parent.
 
+## Planned: Named Subagent Profiles (proposal only)
+
+The global `delegation.model` / `delegation.provider` override is already the
+right default when you want **all** subagents to use one alternate backend.
+What Hermes does **not** have yet is a built-in way to pick different model
+presets for different subagent roles (for example: code review vs research vs
+fast triage).
+
+**Proposed direction — not implemented yet:**
+
+```yaml
+delegation:
+  # Existing global fallback for every child
+  provider: "openai-codex"
+  model: "gpt-5.3-codex-spark"
+  reasoning_effort: "xhigh"
+
+  # Proposed future extension
+  profiles:
+    fast-fix:
+      provider: "openrouter"
+      model: "google/gemini-3-flash-preview"
+      reasoning_effort: "low"
+
+    reviewer:
+      provider: "openrouter"
+      model: "anthropic/claude-sonnet-4-6"
+      reasoning_effort: "high"
+
+    researcher:
+      provider: "openai-codex"
+      model: "gpt-5.3-codex-spark"
+      reasoning_effort: "xhigh"
+```
+
+**Suggested resolution order:**
+
+1. Explicit per-call override on `delegate_task(...)`
+2. Named `delegation.profiles.<name>`
+3. Existing global `delegation.*` defaults
+4. Parent agent settings
+
+That keeps today's behavior backward-compatible while adding a clean path for
+role-specific subagents later. A likely future tool shape would be:
+
+```python
+delegate_task(
+    goal="Review the auth layer for security issues",
+    context="...",
+    profile="reviewer",
+)
+```
+
+**Why this shape:** it lets users keep one main-agent model, one global
+subagent fallback, and a small set of intentional presets without introducing a
+new provider-selection syntax or breaking current `delegation.*` configs.
+
 ## Toolset Selection Tips
 
 The `toolsets` parameter controls what tools the subagent has access to. Choose based on the task:

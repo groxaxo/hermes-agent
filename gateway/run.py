@@ -5606,6 +5606,9 @@ class GatewayRunner:
         if canonical == "reasoning":
             return await self._handle_reasoning_command(event)
 
+        if canonical == "delegation":
+            return await self._handle_delegation_command(event)
+
         if canonical == "fast":
             return await self._handle_fast_command(event)
 
@@ -9495,6 +9498,197 @@ class GatewayRunner:
         self._set_session_reasoning_override(session_key, parsed)
         self._evict_cached_agent(session_key)
         return f"🧠 ✓ Reasoning effort set to `{effort}` (session only — add `--global` to persist)\n_(takes effect on next message)_"
+
+    async def _handle_delegation_command(self, event: MessageEvent) -> str:
+        """Handle /delegation — configure delegation.provider, delegation.model, delegation.reasoning_effort.
+
+        Usage:
+            /delegation                   Show current subagent settings + launch model picker
+            /delegation status            Same as no-arg form
+            /delegation model <name>      Set delegation model directly
+            /delegation provider <name>   Set delegation provider directly
+            /delegation reasoning <level> Set delegation reasoning effort
+            /delegation reset             Clear all delegation overrides (back to main model)
+        """
+        import yaml
+        from hermes_cli.model_switch import list_picker_providers, list_authenticated_providers
+
+        raw_args = event.get_command_args().strip()
+        args_parts = raw_args.split() if raw_args else []
+        config_path = _hermes_home / "config.yaml"
+        session_key = self._session_key_for_source(event.source)
+
+        def _save_config_key(key_path: str, value):
+            try:
+                user_config = {}
+                if config_path.exists():
+                    with open(config_path, encoding="utf-8") as f:
+                        user_config = yaml.safe_load(f) or {}
+                keys = key_path.split(".")
+                current = user_config
+                for k in keys[:-1]:
+                    if k not in current or not isinstance(current[k], dict):
+                        current[k] = {}
+                    current = current[k]
+                current[keys[-1]] = value
+                atomic_yaml_write(config_path, user_config)
+                return True
+            except Exception as e:
+                logger.error("Failed to save config key %s: %s", key_path, e)
+                return False
+
+        def _delete_config_keys(*key_paths):
+            try:
+                user_config = {}
+                if config_path.exists():
+                    with open(config_path, encoding="utf-8") as f:
+                        user_config = yaml.safe_load(f) or {}
+                for key_path in key_paths:
+                    keys = key_path.split(".")
+                    current = user_config
+                    for k in keys[:-1]:
+                        if k not in current or not isinstance(current[k], dict):
+                            current = None
+                            break
+                        current = current[k]
+                    if current is not None and keys[-1] in current:
+                        del current[keys[-1]]
+                atomic_yaml_write(config_path, user_config)
+                return True
+            except Exception as e:
+                logger.error("Failed to delete config keys: %s", e)
+                return False
+
+        def _read_delegation_cfg():
+            try:
+                user_config = {}
+                if config_path.exists():
+                    with open(config_path, encoding="utf-8") as f:
+                        user_config = yaml.safe_load(f) or {}
+                return user_config.get("delegation", {}) or {}
+            except Exception:
+                return {}
+
+        # --- /delegation reset ---
+        sub = args_parts[0].lower() if args_parts else ""
+        if sub == "reset":
+            _delete_config_keys(
+                "delegation.model", "delegation.provider", "delegation.reasoning_effort"
+            )
+            self._evict_cached_agent(session_key)
+            return (
+                "🤖 ✓ Delegation settings cleared.\n"
+                "Subagents will now inherit the main agent model.\n"
+                "_(takes effect on next delegation)_"
+            )
+
+        # --- /delegation model <name> ---
+        if sub == "model":
+            if len(args_parts) < 2:
+                return "Usage: `/delegation model <model-name>`"
+            model_name = args_parts[1]
+            _save_config_key("delegation.model", model_name)
+            self._evict_cached_agent(session_key)
+            return (
+                f"🤖 ✓ Delegation model set to `{model_name}`\n"
+                "_(takes effect on next delegation)_"
+            )
+
+        # --- /delegation provider <name> ---
+        if sub == "provider":
+            if len(args_parts) < 2:
+                return "Usage: `/delegation provider <provider-slug>`"
+            provider_name = args_parts[1]
+            _save_config_key("delegation.provider", provider_name)
+            self._evict_cached_agent(session_key)
+            return (
+                f"🤖 ✓ Delegation provider set to `{provider_name}`\n"
+                "_(takes effect on next delegation)_"
+            )
+
+        # --- /delegation reasoning <level> ---
+        if sub == "reasoning":
+            if len(args_parts) < 2:
+                return (
+                    "Usage: `/delegation reasoning <level>`\n"
+                    "Levels: none, minimal, low, medium, high, xhigh"
+                )
+            level = args_parts[1].lower()
+            valid_levels = ("none", "minimal", "low", "medium", "high", "xhigh")
+            if level not in valid_levels:
+                return (
+                    f"⚠️ Unknown level: `{level}`\n"
+                    f"Valid levels: {', '.join(valid_levels)}"
+                )
+            _save_config_key("delegation.reasoning_effort", level)
+            self._evict_cached_agent(session_key)
+            return (
+                f"🤖 ✓ Delegation reasoning effort set to `{level}`\n"
+                "_(takes effect on next delegation)_"
+            )
+
+        # --- /delegation [status] — show current + launch picker ---
+        delegation_cfg = _read_delegation_cfg()
+        current_model = delegation_cfg.get("model", "")
+        current_provider = delegation_cfg.get("provider", "")
+        current_reasoning = delegation_cfg.get("reasoning_effort", "")
+
+        status_lines = [
+            "🤖 **Delegation Settings**\n",
+            f"**Model:** `{current_model or '(same as main agent)'}`",
+            f"**Provider:** `{current_provider or '(same as main agent)'}`",
+            f"**Reasoning:** `{current_reasoning or '(same as main agent)'}`",
+            "",
+            "Use `/delegation model <name>`, `/delegation provider <name>`, `/delegation reasoning <level>`, or `/delegation reset`.",
+        ]
+
+        # On Telegram — also launch interactive model picker
+        adapter = self._adapter
+        has_send_delegation_picker = hasattr(adapter, "send_delegation_picker")
+        if has_send_delegation_picker:
+            try:
+                providers = list_picker_providers(
+                    current_model=current_model,
+                    current_provider=current_provider,
+                )
+            except Exception:
+                try:
+                    providers = list_authenticated_providers(
+                        current_model=current_model,
+                        current_provider=current_provider,
+                    )
+                except Exception:
+                    providers = []
+
+            if providers:
+                async def on_model_selected(chat_id, model_id, provider_slug):
+                    _save_config_key("delegation.model", model_id)
+                    _save_config_key("delegation.provider", provider_slug)
+                    self._evict_cached_agent(session_key)
+                    return (
+                        f"🤖 ✓ Delegation model → `{model_id}`\n"
+                        f"Provider: `{provider_slug}`\n"
+                        "_(takes effect on next delegation)_"
+                    )
+
+                chat_id = str(event.source.channel)
+                metadata = {
+                    "thread_id": getattr(event.source, "thread_id", None),
+                }
+                await adapter.send_delegation_picker(
+                    chat_id=chat_id,
+                    providers=providers,
+                    current_model=current_model,
+                    current_provider=current_provider,
+                    session_key=session_key,
+                    on_model_selected=on_model_selected,
+                    metadata=metadata,
+                )
+                status_lines.append("\n_(Model picker sent above ↑)_")
+            else:
+                status_lines.append("\n⚠️ No authenticated providers found for picker.")
+
+        return "\n".join(status_lines)
 
     async def _handle_fast_command(self, event: MessageEvent) -> str:
         """Handle /fast — mirror the CLI Priority Processing toggle in gateway chats."""

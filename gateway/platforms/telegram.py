@@ -321,6 +321,8 @@ class TelegramAdapter(BasePlatformAdapter):
         self._dm_topics_config: List[Dict[str, Any]] = self.config.extra.get("dm_topics", [])
         # Interactive model picker state per chat
         self._model_picker_state: Dict[str, dict] = {}
+        # Interactive delegation model picker state per chat
+        self._delegation_picker_state: Dict[str, dict] = {}
         # Approval button state: message_id → session_key
         self._approval_state: Dict[int, str] = {}
         # Slash-confirm button state: confirm_id → session_key (for /reload-mcp
@@ -1953,6 +1955,300 @@ class TelegramAdapter(BasePlatformAdapter):
             # Catch-all (e.g. page counter button "mx:noop")
             await query.answer()
 
+    async def send_delegation_picker(
+        self,
+        chat_id: str,
+        providers: list,
+        current_model: str,
+        current_provider: str,
+        session_key: str,
+        on_model_selected,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> "SendResult":
+        """Send interactive delegation model picker (dp:/dm:/dpg:/dpb/dpx callbacks)."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            from hermes_cli.providers import get_label
+        except ImportError:
+            def get_label(slug):
+                return slug
+
+        try:
+            buttons: list = []
+            for p in providers:
+                count = p.get("total_models", len(p.get("models", [])))
+                label = f"{p['name']} ({count})"
+                if p.get("is_current"):
+                    label = f"✓ {label}"
+                buttons.append(
+                    InlineKeyboardButton(label, callback_data=f"dp:{p['slug']}")
+                )
+
+            rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
+            rows.append([InlineKeyboardButton("✗ Cancel", callback_data="dpx")])
+            keyboard = InlineKeyboardMarkup(rows)
+
+            try:
+                provider_label = get_label(current_provider)
+            except Exception:
+                provider_label = current_provider
+
+            text = (
+                f"🤖 *Delegation Model*\n\n"
+                f"Current subagent model: `{current_model or 'inherited'}`\n"
+                f"Provider: {provider_label}\n\n"
+                f"Select a provider for subagents:"
+            )
+
+            thread_id = metadata.get("thread_id") if metadata else None
+            msg = await self._bot.send_message(
+                chat_id=_coerce_chat_id(chat_id),
+                text=text,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=keyboard,
+                message_thread_id=int(thread_id) if thread_id else None,
+                **self._link_preview_kwargs(),
+            )
+
+            self._delegation_picker_state[str(chat_id)] = {
+                "msg_id": msg.message_id,
+                "providers": providers,
+                "session_key": session_key,
+                "on_model_selected": on_model_selected,
+                "current_model": current_model,
+                "current_provider": current_provider,
+            }
+
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.warning("[%s] send_delegation_picker failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
+    def _build_delegation_keyboard(self, models: list, page: int) -> tuple:
+        """Build paginated delegation model buttons. Returns (keyboard, page_info_text)."""
+        page_size = self._MODEL_PAGE_SIZE
+        total = len(models)
+        total_pages = max(1, (total + page_size - 1) // page_size)
+        page = max(0, min(page, total_pages - 1))
+
+        start = page * page_size
+        end = min(start + page_size, total)
+        page_models = models[start:end]
+
+        buttons: list = []
+        for i, model_id in enumerate(page_models):
+            abs_idx = start + i
+            short = model_id.split("/")[-1] if "/" in model_id else model_id
+            if len(short) > 38:
+                short = short[:35] + "..."
+            buttons.append(
+                InlineKeyboardButton(short, callback_data=f"dm:{abs_idx}")
+            )
+
+        rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
+
+        if total_pages > 1:
+            nav: list = []
+            if page > 0:
+                nav.append(InlineKeyboardButton("◀ Prev", callback_data=f"dpg:{page - 1}"))
+            nav.append(InlineKeyboardButton(f"{page + 1}/{total_pages}", callback_data="dpx:noop"))
+            if page < total_pages - 1:
+                nav.append(InlineKeyboardButton("Next ▶", callback_data=f"dpg:{page + 1}"))
+            rows.append(nav)
+
+        rows.append([
+            InlineKeyboardButton("◀ Back", callback_data="dpb"),
+            InlineKeyboardButton("✗ Cancel", callback_data="dpx"),
+        ])
+
+        page_info = f" ({start + 1}–{end} of {total})" if total_pages > 1 else ""
+        return InlineKeyboardMarkup(rows), page_info
+
+    async def _handle_delegation_picker_callback(
+        self, query, data: str, chat_id: str
+    ) -> None:
+        """Handle delegation picker callbacks (dp:/dm:/dpg:/dpb/dpx)."""
+        state = self._delegation_picker_state.get(chat_id)
+        if not state:
+            await query.answer(text="Picker expired — use /delegation again.")
+            return
+
+        try:
+            from hermes_cli.providers import get_label
+        except ImportError:
+            def get_label(slug):
+                return slug
+
+        if data.startswith("dp:"):
+            # Provider selected: show model list (page 0)
+            provider_slug = data[3:]
+            provider = next(
+                (p for p in state["providers"] if p["slug"] == provider_slug),
+                None,
+            )
+            if not provider:
+                await query.answer(text="Provider not found.")
+                return
+
+            models = provider.get("models", [])
+            state["selected_provider"] = provider_slug
+            state["selected_provider_name"] = provider.get("name", provider_slug)
+            state["model_list"] = models
+            state["model_page"] = 0
+
+            keyboard, page_info = self._build_delegation_keyboard(models, 0)
+
+            pname = provider.get("name", provider_slug)
+            total = provider.get("total_models", len(models))
+            shown = len(models)
+            extra = (
+                f"\n_{total - shown} more available — type `/delegation model <name>` directly_"
+                if total > shown
+                else ""
+            )
+
+            await query.edit_message_text(
+                text=(
+                    f"🤖 *Delegation Model*\n\n"
+                    f"Provider: *{pname}*{page_info}\n"
+                    f"Select a model for subagents:{extra}"
+                ),
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=keyboard,
+            )
+            await query.answer()
+
+        elif data.startswith("dpg:"):
+            # Page navigation
+            try:
+                page = int(data[4:])
+            except ValueError:
+                await query.answer(text="Invalid page.")
+                return
+
+            models = state.get("model_list", [])
+            state["model_page"] = page
+
+            keyboard, page_info = self._build_delegation_keyboard(models, page)
+
+            pname = state.get("selected_provider_name", "")
+            provider_slug = state.get("selected_provider", "")
+            provider = next(
+                (p for p in state["providers"] if p["slug"] == provider_slug),
+                None,
+            )
+            total = provider.get("total_models", len(models)) if provider else len(models)
+            shown = len(models)
+            extra = (
+                f"\n_{total - shown} more available — type `/delegation model <name>` directly_"
+                if total > shown
+                else ""
+            )
+
+            await query.edit_message_text(
+                text=(
+                    f"🤖 *Delegation Model*\n\n"
+                    f"Provider: *{pname}*{page_info}\n"
+                    f"Select a model for subagents:{extra}"
+                ),
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=keyboard,
+            )
+            await query.answer()
+
+        elif data.startswith("dm:"):
+            # Model selected
+            try:
+                idx = int(data[3:])
+            except ValueError:
+                await query.answer(text="Invalid selection.")
+                return
+
+            model_list = state.get("model_list", [])
+            if idx < 0 or idx >= len(model_list):
+                await query.answer(text="Invalid model index.")
+                return
+
+            model_id = model_list[idx]
+            provider_slug = state.get("selected_provider", "")
+            callback = state.get("on_model_selected")
+
+            if not callback:
+                await query.answer(text="Picker expired.")
+                return
+
+            try:
+                result_text = await callback(chat_id, model_id, provider_slug)
+            except Exception as exc:
+                logger.error("Delegation picker switch failed: %s", exc)
+                result_text = f"Error setting delegation model: {exc}"
+
+            try:
+                await query.edit_message_text(
+                    text=result_text,
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=None,
+                )
+            except Exception:
+                try:
+                    await query.edit_message_text(
+                        text=result_text,
+                        parse_mode=None,
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass
+            await query.answer(text="Delegation model set!")
+            self._delegation_picker_state.pop(chat_id, None)
+
+        elif data == "dpb":
+            # Back to provider list
+            buttons: list = []
+            for p in state["providers"]:
+                count = p.get("total_models", len(p.get("models", [])))
+                label = f"{p['name']} ({count})"
+                if p.get("is_current"):
+                    label = f"✓ {label}"
+                buttons.append(
+                    InlineKeyboardButton(label, callback_data=f"dp:{p['slug']}")
+                )
+
+            rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
+            rows.append([InlineKeyboardButton("✗ Cancel", callback_data="dpx")])
+            keyboard = InlineKeyboardMarkup(rows)
+
+            try:
+                provider_label = get_label(state["current_provider"])
+            except Exception:
+                provider_label = state["current_provider"]
+
+            await query.edit_message_text(
+                text=(
+                    f"🤖 *Delegation Model*\n\n"
+                    f"Current subagent model: `{state['current_model'] or 'inherited'}`\n"
+                    f"Provider: {provider_label}\n\n"
+                    f"Select a provider for subagents:"
+                ),
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=keyboard,
+            )
+            await query.answer()
+
+        elif data == "dpx":
+            # Cancel
+            self._delegation_picker_state.pop(chat_id, None)
+            await query.edit_message_text(
+                text="Delegation model selection cancelled.",
+                reply_markup=None,
+            )
+            await query.answer()
+
+        else:
+            # Catch-all (e.g. page counter "dpx:noop")
+            await query.answer()
+
     async def _handle_callback_query(
         self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
     ) -> None:
@@ -1977,6 +2273,13 @@ class TelegramAdapter(BasePlatformAdapter):
             chat_id = str(query.message.chat_id) if query.message else None
             if chat_id:
                 await self._handle_model_picker_callback(query, data, chat_id)
+            return
+
+        # --- Delegation picker callbacks (dp:/dm:/dpg:/dpb/dpx) ---
+        if data.startswith(("dp:", "dm:", "dpg:", "dpb", "dpx")):
+            chat_id = str(query.message.chat_id) if query.message else None
+            if chat_id:
+                await self._handle_delegation_picker_callback(query, data, chat_id)
             return
 
         # --- Exec approval callbacks (ea:choice:id) ---
@@ -3709,7 +4012,7 @@ class TelegramAdapter(BasePlatformAdapter):
             chat_type=chat_type,
             user_id=str(user.id) if user else (str(chat.id) if chat_type == "dm" else None),
             user_name=(
-                (user.username or user.full_name)
+                (getattr(user, "username", None) or getattr(user, "full_name", None))
                 if user
                 else (chat.full_name if hasattr(chat, "full_name") and chat_type == "dm" else None)
             ),
