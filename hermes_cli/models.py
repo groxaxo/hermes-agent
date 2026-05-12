@@ -101,13 +101,35 @@ _ai_gateway_catalog_cache: list[tuple[str, str]] | None = None
 
 
 def _codex_curated_models() -> list[str]:
-    """Derive the openai-codex curated list from codex_models.py.
+    """Derive the openai-codex curated list dynamically.
 
-    Single source of truth: DEFAULT_CODEX_MODELS + forward-compat synthesis.
-    This keeps the gateway /model picker in sync with the CLI `hermes model`
-    flow without maintaining a separate static list.
+    Tries the live Codex API first (if OAuth credentials are available),
+    then falls back to the local Codex CLI cache (~/.codex/models_cache.json),
+    and finally to the hardcoded DEFAULT_CODEX_MODELS + forward-compat synthesis.
+
+    This mirrors the approach used by provider_model_ids("openai-codex") but
+    runs at import time so _PROVIDER_MODELS stays fresh without requiring a
+    separate provider_model_ids() call.
     """
-    from hermes_cli.codex_models import DEFAULT_CODEX_MODELS, _add_forward_compat_models
+    from hermes_cli.codex_models import (
+        DEFAULT_CODEX_MODELS,
+        _add_forward_compat_models,
+        get_codex_model_ids,
+    )
+
+    # Try live API with OAuth token (same path as provider_model_ids)
+    try:
+        from hermes_cli.auth import resolve_codex_runtime_credentials
+        creds = resolve_codex_runtime_credentials(refresh_if_expiring=True)
+        access_token = creds.get("api_key")
+        if access_token:
+            live = get_codex_model_ids(access_token=access_token)
+            if live:
+                return _add_forward_compat_models(live)
+    except Exception:
+        pass
+
+    # Fall back to static defaults
     return _add_forward_compat_models(list(DEFAULT_CODEX_MODELS))
 
 

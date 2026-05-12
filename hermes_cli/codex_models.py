@@ -13,9 +13,12 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_CODEX_MODELS: List[str] = [
     "gpt-5.5",
-    "gpt-5.4-mini",
     "gpt-5.4",
+    "gpt-5.4-mini",
     "gpt-5.3-codex",
+    "gpt-5.2",
+    # Legacy models — kept as forward-compat fallbacks for accounts that
+    # still expose them via the Codex catalog or local CLI cache.
     "gpt-5.2-codex",
     "gpt-5.1-codex-max",
     "gpt-5.1-codex-mini",
@@ -23,9 +26,9 @@ DEFAULT_CODEX_MODELS: List[str] = [
 
 _FORWARD_COMPAT_TEMPLATE_MODELS: List[tuple[str, tuple[str, ...]]] = [
     ("gpt-5.5", ("gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex")),
-    ("gpt-5.4-mini", ("gpt-5.3-codex", "gpt-5.2-codex")),
-    ("gpt-5.4", ("gpt-5.3-codex", "gpt-5.2-codex")),
-    ("gpt-5.3-codex", ("gpt-5.2-codex",)),
+    ("gpt-5.4-mini", ("gpt-5.3-codex", "gpt-5.2", "gpt-5.2-codex")),
+    ("gpt-5.4", ("gpt-5.3-codex", "gpt-5.2", "gpt-5.2-codex")),
+    ("gpt-5.3-codex", ("gpt-5.2", "gpt-5.2-codex")),
 ]
 
 
