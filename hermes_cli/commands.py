@@ -200,6 +200,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("update", "Update Hermes Agent to the latest version", "Info",
                gateway_only=True),
     CommandDef("debug", "Upload debug report (system info + logs) and get shareable links", "Info"),
+    CommandDef("tasklog", "List recent async tasks (delegate / background / cron)", "Info",
+               args_hint="[status]"),
 
     # Exit
     CommandDef("quit", "Exit the CLI", "Exit",

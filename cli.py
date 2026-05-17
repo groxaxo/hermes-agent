@@ -6824,6 +6824,8 @@ class HermesCLI:
             self._handle_copy_command(cmd_original)
         elif canonical == "debug":
             self._handle_debug_command()
+        elif canonical == "tasklog":
+            self._handle_tasklog_command(cmd_original)
         elif canonical == "paste":
             self._handle_paste_command()
         elif canonical == "image":
@@ -7976,6 +7978,45 @@ class HermesCLI:
 
         args = SimpleNamespace(lines=200, expire=7, local=False)
         run_debug_share(args)
+
+    def _handle_tasklog_command(self, cmd_original: str):
+        """Handle /tasks — list recent async tasks (delegate/background/cron)."""
+        try:
+            from agent import async_tasks as _async_tasks
+        except Exception as e:
+            print(f"(._.) tasks unavailable: {e}")
+            return
+        parts = cmd_original.split()
+        status_filter = parts[1] if len(parts) > 1 else None
+        try:
+            rows = _async_tasks.list_tasks(status=status_filter, limit=20)
+        except Exception as e:
+            print(f"(._.) failed to list tasks: {e}")
+            return
+        if not rows:
+            print("(no async tasks recorded yet)" if not status_filter
+                  else f"(no async tasks with status={status_filter})")
+            return
+        print(f"{'TASK_ID':<32} {'TYPE':<11} {'STATUS':<10} {'AGE':<8} GOAL")
+        print("-" * 100)
+        import time as _t
+        now = _t.time()
+        for r in rows:
+            tid = (r.get("task_id") or "")[:32]
+            typ = (r.get("type") or "")[:11]
+            stat = (r.get("status") or "")[:10]
+            started = r.get("started_at") or 0
+            age = int(now - started) if started else 0
+            if age < 60:
+                age_s = f"{age}s"
+            elif age < 3600:
+                age_s = f"{age // 60}m"
+            elif age < 86400:
+                age_s = f"{age // 3600}h"
+            else:
+                age_s = f"{age // 86400}d"
+            goal = (r.get("goal") or "")[:50].replace("\n", " ")
+            print(f"{tid:<32} {typ:<11} {stat:<10} {age_s:<8} {goal}")
 
     def _show_usage(self):
         """Show rate limits (if available) and session token usage."""

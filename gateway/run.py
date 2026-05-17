@@ -2911,6 +2911,20 @@ class GatewayRunner:
         except RuntimeError:
             self._gateway_loop = None
         logger.info("Session storage: %s", self.config.sessions_dir)
+
+        # Durable async-task registry: any task still marked 'running' from
+        # a previous gateway process whose PID is no longer alive is an
+        # orphan — sweep it before adapters start, so /tasks reflects truth.
+        try:
+            from agent import async_tasks as _async_tasks
+            _orphaned = _async_tasks.mark_stale_running_as_orphaned()
+            if _orphaned:
+                logger.info(
+                    "async_tasks: marked %d stale running task(s) as orphaned",
+                    _orphaned,
+                )
+        except Exception:
+            logger.debug("async_tasks orphan sweep failed", exc_info=True)
         # Log the resolved max_iterations budget so operators can verify the
         # config.yaml → env bridge did the right thing at a glance (instead
         # of silently running at a stale .env value for weeks).
@@ -5665,6 +5679,9 @@ class GatewayRunner:
 
         if canonical == "debug":
             return await self._handle_debug_command(event)
+
+        if canonical == "tasklog":
+            return await self._handle_tasklog_command(event)
 
         if canonical == "title":
             return await self._handle_title_command(event)
@@ -9245,6 +9262,18 @@ class GatewayRunner:
     ) -> None:
         """Execute a background agent task and deliver the result to the chat."""
         from run_agent import AIAgent
+        from agent import async_tasks as _async_tasks
+
+        try:
+            _async_tasks.register(
+                task_id,
+                type=_async_tasks.TYPE_BACKGROUND,
+                goal=prompt,
+                requester=source.platform,
+                session_id=task_id,
+            )
+        except Exception:
+            logger.debug("async_tasks.register failed for background", exc_info=True)
 
         adapter = self.adapters.get(source.platform)
         if not adapter:
@@ -9324,6 +9353,16 @@ class GatewayRunner:
             if not response and result and result.get("error"):
                 response = f"Error: {result['error']}"
 
+            try:
+                _async_tasks.complete(
+                    task_id,
+                    result_summary=(response or "")[:500] or None,
+                    output_preview=(response or "")[:160] or None,
+                    api_calls=int((result or {}).get("api_calls", 0) or 0),
+                )
+            except Exception:
+                logger.debug("async_tasks.complete failed for background", exc_info=True)
+
             # Extract media files from the response
             if response:
                 media_files, response = adapter.extract_media(response)
@@ -9377,6 +9416,10 @@ class GatewayRunner:
 
         except Exception as e:
             logger.exception("Background task %s failed", task_id)
+            try:
+                _async_tasks.fail(task_id, error=str(e))
+            except Exception:
+                logger.debug("async_tasks.fail failed for background", exc_info=True)
             try:
                 await adapter.send(
                     chat_id=source.chat_id,
@@ -11461,6 +11504,56 @@ class GatewayRunner:
             return "\n".join(lines)
 
         return await loop.run_in_executor(None, _collect_and_upload)
+
+    async def _handle_tasklog_command(self, event: MessageEvent) -> str:
+        """Handle /tasks — list recent async tasks (delegate/background/cron)."""
+        import asyncio
+        import time as _t
+        try:
+            from agent import async_tasks as _async_tasks
+        except Exception as exc:
+            return f"✗ tasks unavailable: {exc}"
+
+        # Parse optional status filter from message text
+        raw = (event.text or "").strip()
+        parts = raw.split()
+        status_filter = parts[1] if len(parts) > 1 and not parts[1].startswith("/") else None
+
+        def _collect():
+            try:
+                return _async_tasks.list_tasks(status=status_filter, limit=20)
+            except Exception as exc:
+                return exc
+
+        loop = asyncio.get_running_loop()
+        rows = await loop.run_in_executor(None, _collect)
+        if isinstance(rows, Exception):
+            return f"✗ failed to list tasks: {rows}"
+        if not rows:
+            return ("(no async tasks recorded yet)" if not status_filter
+                    else f"(no async tasks with status={status_filter})")
+
+        now = _t.time()
+        lines = ["**Recent async tasks:**", "```",
+                 f"{'TASK_ID':<32} {'TYPE':<11} {'STATUS':<10} {'AGE':<6} GOAL"]
+        for r in rows:
+            tid = (r.get("task_id") or "")[:32]
+            typ = (r.get("type") or "")[:11]
+            stat = (r.get("status") or "")[:10]
+            started = r.get("started_at") or 0
+            age = int(now - started) if started else 0
+            if age < 60:
+                age_s = f"{age}s"
+            elif age < 3600:
+                age_s = f"{age // 60}m"
+            elif age < 86400:
+                age_s = f"{age // 3600}h"
+            else:
+                age_s = f"{age // 86400}d"
+            goal = (r.get("goal") or "")[:40].replace("\n", " ")
+            lines.append(f"{tid:<32} {typ:<11} {stat:<10} {age_s:<6} {goal}")
+        lines.append("```")
+        return "\n".join(lines)
 
     async def _handle_update_command(self, event: MessageEvent) -> str:
         """Handle /update command — update Hermes Agent to the latest version.

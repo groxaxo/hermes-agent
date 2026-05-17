@@ -32,6 +32,7 @@ from typing import Any, Dict, List, Optional
 
 from toolsets import TOOLSETS
 from tools import file_state
+from agent import async_tasks as _async_tasks
 from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb
 from utils import base_url_hostname, is_truthy_value
 
@@ -1461,6 +1462,19 @@ def _run_single_child(
         child_task_id = _subagent_id or f"subagent-{task_index}-{_uuid.uuid4().hex[:8]}"
         parent_task_id = getattr(parent_agent, "_current_task_id", None)
         wall_start = time.time()
+
+        # Durable async-task registry — record the subagent so it survives a
+        # parent crash and surfaces in `/tasks`.  Best-effort; never raises.
+        try:
+            _async_tasks.register(
+                child_task_id,
+                type=_async_tasks.TYPE_DELEGATE,
+                goal=goal,
+                parent_task_id=parent_task_id,
+            )
+        except Exception:
+            logger.debug("async_tasks.register failed for delegate", exc_info=True)
+
         parent_reads_snapshot = (
             list(file_state.known_reads(parent_task_id)) if parent_task_id else []
         )
@@ -1570,6 +1584,16 @@ def _run_single_child(
                     )
             else:
                 _err = str(_timeout_exc)
+
+            try:
+                _async_tasks.fail(
+                    child_task_id,
+                    error=_err,
+                    status=_async_tasks.STATUS_FAILED,
+                    api_calls=int(child_api_calls or 0),
+                )
+            except Exception:
+                logger.debug("async_tasks.fail failed for delegate timeout", exc_info=True)
 
             return {
                 "task_index": task_index,
@@ -1792,11 +1816,50 @@ def _run_single_child(
             except Exception as e:
                 logger.debug("Progress callback completion failed: %s", e)
 
+        # Durable registry — record final outcome.  ``status`` here is one of
+        # 'completed' / 'failed' / 'interrupted' depending on the child.
+        try:
+            _registry_status = (
+                _async_tasks.STATUS_COMPLETED
+                if status == "completed"
+                else _async_tasks.STATUS_CANCELLED if status == "interrupted"
+                else _async_tasks.STATUS_FAILED
+            )
+            if _registry_status == _async_tasks.STATUS_COMPLETED:
+                _async_tasks.complete(
+                    child_task_id,
+                    result_summary=summary[:500] if summary else None,
+                    output_preview=summary[:160] if summary else None,
+                    cost_usd=complete_kwargs.get("cost_usd"),
+                    input_tokens=int(complete_kwargs.get("input_tokens", 0) or 0),
+                    output_tokens=int(complete_kwargs.get("output_tokens", 0) or 0),
+                    api_calls=int(complete_kwargs.get("api_calls", 0) or 0),
+                )
+            else:
+                _async_tasks.fail(
+                    child_task_id,
+                    status=_registry_status,
+                    error=entry.get("error") or (None if summary else "no output"),
+                    result_summary=summary[:500] if summary else None,
+                    cost_usd=complete_kwargs.get("cost_usd"),
+                    input_tokens=int(complete_kwargs.get("input_tokens", 0) or 0),
+                    output_tokens=int(complete_kwargs.get("output_tokens", 0) or 0),
+                    api_calls=int(complete_kwargs.get("api_calls", 0) or 0),
+                )
+        except Exception:
+            logger.debug("async_tasks finalize failed for delegate", exc_info=True)
+
         return entry
 
     except Exception as exc:
         duration = round(time.monotonic() - child_start, 2)
         logging.exception(f"[subagent-{task_index}] failed")
+        try:
+            _tid = locals().get("child_task_id")
+            if _tid:
+                _async_tasks.fail(_tid, error=str(exc))
+        except Exception:
+            logger.debug("async_tasks.fail failed for delegate exception", exc_info=True)
         if child_progress_cb:
             try:
                 child_progress_cb(

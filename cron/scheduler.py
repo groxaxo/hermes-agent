@@ -1651,6 +1651,18 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
 
         def _process_job(job: dict) -> bool:
             """Run one due job end-to-end: execute, save, deliver, mark."""
+            import time as _time
+            from agent import async_tasks as _async_tasks
+            _task_id = f"cron_{job['id']}_{int(_time.time())}"
+            try:
+                _async_tasks.register(
+                    _task_id,
+                    type=_async_tasks.TYPE_CRON,
+                    goal=job.get("prompt") or job.get("name"),
+                    cron_job_id=job["id"],
+                )
+            except Exception:
+                logger.debug("async_tasks.register failed for cron", exc_info=True)
             try:
                 success, output, final_response, error = run_job(job)
 
@@ -1683,11 +1695,26 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                     error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
                 mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+                try:
+                    if success:
+                        _async_tasks.complete(
+                            _task_id,
+                            result_summary=(final_response or "")[:500] or None,
+                            output_preview=(final_response or "")[:160] or None,
+                        )
+                    else:
+                        _async_tasks.fail(_task_id, error=error or "cron job failed")
+                except Exception:
+                    logger.debug("async_tasks finalize failed for cron", exc_info=True)
                 return True
 
             except Exception as e:
                 logger.error("Error processing job %s: %s", job['id'], e)
                 mark_job_run(job["id"], False, str(e))
+                try:
+                    _async_tasks.fail(_task_id, error=str(e))
+                except Exception:
+                    logger.debug("async_tasks.fail failed for cron exception", exc_info=True)
                 return False
 
         # Partition due jobs: those with a per-job workdir mutate
