@@ -2818,6 +2818,21 @@ def _model_flow_openai_codex(config, current_model=""):
         _save_model_choice(selected)
         _update_config_for_provider("openai-codex", DEFAULT_CODEX_BASE_URL)
         print(f"Default model set to: {selected} (via OpenAI Codex)")
+
+        # Prompt for reasoning effort (low/medium/high/xhigh) — same as Copilot flow.
+        from hermes_cli.config import load_config as _load_cfg, save_config as _save_cfg
+        initial_cfg = _load_cfg()
+        current_effort = _current_reasoning_effort(initial_cfg)
+        print()
+        print(f"  {selected} supports configurable reasoning effort.")
+        selected_effort = _prompt_reasoning_effort_selection(
+            ("low", "medium", "high", "xhigh"), current_effort=current_effort
+        )
+        if selected_effort is not None:
+            cfg = _load_cfg()
+            _set_reasoning_effort(cfg, selected_effort)
+            _save_cfg(cfg)
+            print(f"  Reasoning effort set to: {selected_effort}")
     else:
         print("No change.")
 
@@ -4129,7 +4144,26 @@ def _model_flow_copilot_acp(config, current_model=""):
     )
     _save_model_choice(selected)
 
-    cfg = load_config()
+    from hermes_cli.config import load_config as _load_cfg, save_config as _save_cfg
+    from hermes_cli.models import github_model_reasoning_efforts
+
+    initial_cfg = _load_cfg()
+    current_effort = _current_reasoning_effort(initial_cfg)
+    reasoning_efforts = github_model_reasoning_efforts(
+        selected,
+        catalog=catalog,
+        api_key=catalog_api_key,
+    )
+    # ACP clamps to low/medium/high — omit minimal and xhigh from picker
+    acp_efforts = [e for e in reasoning_efforts if e not in ("minimal", "xhigh")]
+    selected_effort = None
+    if acp_efforts:
+        print(f"  {selected} supports reasoning controls.")
+        selected_effort = _prompt_reasoning_effort_selection(
+            acp_efforts, current_effort=current_effort
+        )
+
+    cfg = _load_cfg()
     model = cfg.get("model")
     if not isinstance(model, dict):
         model = {"default": model} if model else {}
@@ -4137,10 +4171,17 @@ def _model_flow_copilot_acp(config, current_model=""):
     model["provider"] = provider_id
     model["base_url"] = effective_base
     model["api_mode"] = "chat_completions"
-    save_config(cfg)
+    if selected_effort is not None:
+        _set_reasoning_effort(cfg, selected_effort)
+    _save_cfg(cfg)
     deactivate_provider()
 
     print(f"Default model set to: {selected} (via {pconfig.name})")
+    if acp_efforts:
+        if selected_effort == "none":
+            print("Reasoning disabled for this model.")
+        elif selected_effort:
+            print(f"Reasoning effort set to: {selected_effort}")
 
 
 def _prompt_api_key(pconfig, existing_key: str, provider_id: str = "") -> tuple:

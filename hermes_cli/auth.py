@@ -2635,6 +2635,52 @@ def _import_codex_cli_tokens() -> Optional[Dict[str, str]]:
         return None
 
 
+def _import_opencode_tokens() -> Optional[Dict[str, str]]:
+    """Try to read OpenAI OAuth tokens from OpenCode's auth store.
+
+    OpenCode stores credentials at ~/.local/share/opencode/auth.json with the
+    shape: {"openai": {"type": "oauth", "access": "...", "refresh": "...",
+    "expires": <epoch_ms>, "accountId": "..."}, ...}
+
+    Returns a tokens dict compatible with Hermes Codex auth
+    ({"access_token": ..., "refresh_token": ...}) if valid and not expired,
+    None otherwise.  Does NOT write to the OpenCode auth file.
+    """
+    opencode_auth_path = Path.home() / ".local" / "share" / "opencode" / "auth.json"
+    if not opencode_auth_path.is_file():
+        return None
+    try:
+        payload = json.loads(opencode_auth_path.read_text())
+        openai_entry = payload.get("openai")
+        if not isinstance(openai_entry, dict):
+            return None
+        entry_type = str(openai_entry.get("type", "")).lower()
+        if entry_type != "oauth":
+            # Not an OAuth session — API key entries use a different key ("key")
+            return None
+        access_token = openai_entry.get("access", "")
+        refresh_token = openai_entry.get("refresh", "")
+        if not access_token or not refresh_token:
+            return None
+        # OpenCode stores expires as epoch milliseconds; check if expired.
+        expires_ms = openai_entry.get("expires")
+        if expires_ms is not None:
+            import time as _time
+            if float(expires_ms) / 1000.0 < _time.time():
+                logger.debug(
+                    "OpenCode tokens at %s are expired — skipping import.",
+                    opencode_auth_path,
+                )
+                return None
+        # Normalise to the same dict shape _import_codex_cli_tokens returns.
+        return {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+        }
+    except Exception:
+        return None
+
+
 def resolve_codex_runtime_credentials(
     *,
     force_refresh: bool = False,
@@ -4509,6 +4555,26 @@ def _login_openai_codex(
                 print("Existing Codex credentials are expired. Starting fresh login...")
         except AuthError:
             pass
+
+    # Check for existing OpenCode tokens we can import (preferred over Codex CLI)
+    if not force_new_login:
+        opencode_tokens = _import_opencode_tokens()
+        if opencode_tokens:
+            print("Found existing OpenCode credentials at ~/.local/share/opencode/auth.json")
+            print("Hermes will create its own session to avoid conflicts with OpenCode.")
+            try:
+                do_import = input("Import these credentials? (a separate login is recommended) [y/N]: ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                do_import = "n"
+            if do_import in ("y", "yes"):
+                _save_codex_tokens(opencode_tokens)
+                base_url = os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/") or DEFAULT_CODEX_BASE_URL
+                config_path = _update_config_for_provider("openai-codex", base_url)
+                print()
+                print("Credentials imported from OpenCode. Note: if OpenCode refreshes its token,")
+                print("Hermes will keep working independently with its own session.")
+                print(f"  Config updated: {config_path} (model.provider=openai-codex)")
+                return
 
     # Check for existing Codex CLI tokens we can import
     if not force_new_login:

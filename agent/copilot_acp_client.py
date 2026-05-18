@@ -361,8 +361,24 @@ class CopilotACPClient:
         timeout: float | None = None,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: Any = None,
+        reasoning_effort: str | None = None,
+        reasoning: dict[str, Any] | None = None,
         **_: Any,
     ) -> Any:
+        # Resolve effort from either the flat kwarg or the nested dict form.
+        resolved_effort: str | None = reasoning_effort
+        if not resolved_effort and isinstance(reasoning, dict):
+            resolved_effort = reasoning.get("effort") or None
+        if resolved_effort:
+            resolved_effort = resolved_effort.strip().lower() or None
+            # Clamp to ACP-supported range: minimal→low, xhigh→high
+            if resolved_effort == "minimal":
+                resolved_effort = "low"
+            elif resolved_effort == "xhigh":
+                resolved_effort = "high"
+            elif resolved_effort == "none":
+                resolved_effort = None
+
         prompt_text = _format_messages_as_prompt(
             messages or [],
             model=model,
@@ -388,6 +404,7 @@ class CopilotACPClient:
         response_text, reasoning_text = self._run_prompt(
             prompt_text,
             timeout_seconds=_effective_timeout,
+            reasoning_effort=resolved_effort,
         )
 
         tool_calls, cleaned_text = _extract_tool_calls_from_text(response_text)
@@ -413,7 +430,7 @@ class CopilotACPClient:
             model=model or "copilot-acp",
         )
 
-    def _run_prompt(self, prompt_text: str, *, timeout_seconds: float) -> tuple[str, str]:
+    def _run_prompt(self, prompt_text: str, *, timeout_seconds: float, reasoning_effort: str | None = None) -> tuple[str, str]:
         try:
             proc = subprocess.Popen(
                 [self._acp_command] + self._acp_args,
@@ -532,11 +549,28 @@ class CopilotACPClient:
                 {
                     "cwd": self._acp_cwd,
                     "mcpServers": [],
+                    **(
+                        {
+                            "reasoningEffort": reasoning_effort,
+                            "reasoning_effort": reasoning_effort,
+                        }
+                        if reasoning_effort
+                        else {}
+                    ),
                 },
             ) or {}
             session_id = str(session.get("sessionId") or "").strip()
             if not session_id:
                 raise RuntimeError("Copilot ACP did not return a sessionId.")
+
+            # Prepend a prompt-level effort hint as a graceful fallback for ACP
+            # implementations that ignore unknown session/new fields.
+            effective_prompt = prompt_text
+            if reasoning_effort:
+                effective_prompt = (
+                    f"[Hermes Copilot ACP setting: use reasoning effort '{reasoning_effort}' for this turn.]\n\n"
+                    + prompt_text
+                )
 
             text_parts: list[str] = []
             reasoning_parts: list[str] = []
@@ -547,7 +581,7 @@ class CopilotACPClient:
                     "prompt": [
                         {
                             "type": "text",
-                            "text": prompt_text,
+                            "text": effective_prompt,
                         }
                     ],
                 },

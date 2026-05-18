@@ -16,6 +16,7 @@ from hermes_cli.auth import (
     _read_codex_tokens,
     _save_codex_tokens,
     _import_codex_cli_tokens,
+    _import_opencode_tokens,
     _login_openai_codex,
     get_codex_auth_status,
     get_provider_auth_state,
@@ -351,3 +352,75 @@ def test_login_openai_codex_force_new_login_skips_existing_reuse_prompt(monkeypa
 
     assert called["device_login"] == 1
     assert called["tokens"]["access_token"] == "fresh-at"
+
+
+# ---------------------------------------------------------------------------
+# _import_opencode_tokens
+# ---------------------------------------------------------------------------
+
+def _make_opencode_auth(tmp_path: Path, *, access="oc-access", refresh="oc-refresh",
+                        expires_future: bool = True) -> Path:
+    """Write a minimal OpenCode auth.json under tmp_path and return the file path."""
+    import time as _t
+    expires_ms = int((_t.time() + (3600 if expires_future else -3600)) * 1000)
+    auth_file = tmp_path / ".local" / "share" / "opencode" / "auth.json"
+    auth_file.parent.mkdir(parents=True, exist_ok=True)
+    auth_file.write_text(json.dumps({
+        "openai": {
+            "type": "oauth",
+            "access": access,
+            "refresh": refresh,
+            "expires": expires_ms,
+            "accountId": "user-123",
+        },
+        "deepseek": {"type": "key", "key": "ds-key"},
+    }))
+    return auth_file
+
+
+def test_import_opencode_tokens_happy_path(tmp_path, monkeypatch):
+    """Valid, non-expired OpenCode tokens are imported correctly."""
+    _make_opencode_auth(tmp_path)
+    # Patch Path.home so the function resolves to our tmp dir
+    monkeypatch.setattr(
+        "hermes_cli.auth.Path",
+        type("FakePath", (Path,), {"home": staticmethod(lambda: tmp_path)}),
+    )
+    result = _import_opencode_tokens()
+    assert result is not None
+    assert result["access_token"] == "oc-access"
+    assert result["refresh_token"] == "oc-refresh"
+
+
+def test_import_opencode_tokens_expired(tmp_path, monkeypatch):
+    """Expired OpenCode tokens return None."""
+    _make_opencode_auth(tmp_path, expires_future=False)
+    monkeypatch.setattr(
+        "hermes_cli.auth.Path",
+        type("FakePath", (Path,), {"home": staticmethod(lambda: tmp_path)}),
+    )
+    result = _import_opencode_tokens()
+    assert result is None
+
+
+def test_import_opencode_tokens_missing_file(tmp_path, monkeypatch):
+    """Missing OpenCode auth.json returns None gracefully."""
+    monkeypatch.setattr(
+        "hermes_cli.auth.Path",
+        type("FakePath", (Path,), {"home": staticmethod(lambda: tmp_path)}),
+    )
+    result = _import_opencode_tokens()
+    assert result is None
+
+
+def test_import_opencode_tokens_api_key_entry_ignored(tmp_path, monkeypatch):
+    """API-key type entries (non-oauth) in OpenCode auth are not imported."""
+    auth_file = tmp_path / "opencode" / "auth.json"
+    auth_file.parent.mkdir(parents=True, exist_ok=True)
+    auth_file.write_text(json.dumps({"openai": {"type": "key", "key": "sk-abc123"}}))
+    monkeypatch.setattr(
+        "hermes_cli.auth.Path",
+        type("FakePath", (Path,), {"home": staticmethod(lambda: tmp_path)}),
+    )
+    result = _import_opencode_tokens()
+    assert result is None
