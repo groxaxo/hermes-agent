@@ -2738,6 +2738,46 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"paused": set_spawn_paused(paused)})
 
 
+@method("task.list")
+def _(rid, params: dict) -> dict:
+    """List durable async tasks for the TUI.
+
+    The active subagent overlay remains backed by ``delegation.status``; this
+    endpoint is the persistent task log for delegate/background/cron work that
+    survives process restarts.
+    """
+    try:
+        from agent import async_tasks as _async_tasks
+
+        limit = int(params.get("limit", 50) or 50)
+        rows = _async_tasks.list_tasks(
+            status=params.get("status") or None,
+            type=params.get("type") or None,
+            parent_task_id=params.get("parent_task_id") or None,
+            limit=max(1, min(limit, 200)),
+        )
+        return _ok(rid, {"tasks": rows, "count": len(rows)})
+    except Exception as e:
+        return _err(rid, 5012, f"task list failed: {e}")
+
+
+@method("task.describe")
+def _(rid, params: dict) -> dict:
+    """Fetch a single durable async task row by task_id."""
+    task_id = str(params.get("task_id") or "").strip()
+    if not task_id:
+        return _err(rid, 4000, "task_id required")
+    try:
+        from agent import async_tasks as _async_tasks
+
+        row = _async_tasks.get(task_id)
+        if row is None:
+            return _err(rid, 4040, f"task not found: {task_id}")
+        return _ok(rid, {"task": row})
+    except Exception as e:
+        return _err(rid, 5013, f"task describe failed: {e}")
+
+
 @method("subagent.interrupt")
 def _(rid, params: dict) -> dict:
     from tools.delegate_tool import interrupt_subagent

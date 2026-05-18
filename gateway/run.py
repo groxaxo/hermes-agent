@@ -2923,6 +2923,25 @@ class GatewayRunner:
                     "async_tasks: marked %d stale running task(s) as orphaned",
                     _orphaned,
                 )
+            try:
+                from hermes_cli.config import load_config as _load_config
+
+                _cfg = _load_config() or {}
+                _task_cfg = (
+                    _cfg.get("async_tasks", {}) if isinstance(_cfg, dict) else {}
+                )
+                _retention_days = float(_task_cfg.get("retention_days", 30) or 0)
+            except Exception:
+                _retention_days = 30.0
+            if _retention_days > 0:
+                _removed = _async_tasks.cleanup_old(
+                    max_age_seconds=_retention_days * 86400
+                )
+                if _removed:
+                    logger.info(
+                        "async_tasks: cleaned up %d old terminal task row(s)",
+                        _removed,
+                    )
         except Exception:
             logger.debug("async_tasks orphan sweep failed", exc_info=True)
         # Log the resolved max_iterations budget so operators can verify the
@@ -9278,6 +9297,10 @@ class GatewayRunner:
         adapter = self.adapters.get(source.platform)
         if not adapter:
             logger.warning("No adapter for platform %s in background task %s", source.platform, task_id)
+            try:
+                _async_tasks.fail(task_id, error=f"No adapter for platform {source.platform}")
+            except Exception:
+                logger.debug("async_tasks.fail failed for missing adapter", exc_info=True)
             return
 
         _thread_metadata = {"thread_id": source.thread_id} if source.thread_id else None
@@ -9289,6 +9312,16 @@ class GatewayRunner:
                 user_config=user_config,
             )
             if not runtime_kwargs.get("api_key"):
+                try:
+                    _async_tasks.fail(
+                        task_id,
+                        error="no provider credentials configured",
+                    )
+                except Exception:
+                    logger.debug(
+                        "async_tasks.fail failed for background credentials",
+                        exc_info=True,
+                    )
                 await adapter.send(
                     source.chat_id,
                     f"❌ Background task {task_id} failed: no provider credentials configured.",
@@ -9354,14 +9387,22 @@ class GatewayRunner:
                 response = f"Error: {result['error']}"
 
             try:
-                _async_tasks.complete(
-                    task_id,
-                    result_summary=(response or "")[:500] or None,
-                    output_preview=(response or "")[:160] or None,
-                    api_calls=int((result or {}).get("api_calls", 0) or 0),
-                )
+                if result and result.get("error"):
+                    _async_tasks.fail(
+                        task_id,
+                        error=str(result.get("error")),
+                        result_summary=(response or "")[:500] or None,
+                        api_calls=int((result or {}).get("api_calls", 0) or 0),
+                    )
+                else:
+                    _async_tasks.complete(
+                        task_id,
+                        result_summary=(response or "")[:500] or None,
+                        output_preview=(response or "")[:160] or None,
+                        api_calls=int((result or {}).get("api_calls", 0) or 0),
+                    )
             except Exception:
-                logger.debug("async_tasks.complete failed for background", exc_info=True)
+                logger.debug("async_tasks finalize failed for background", exc_info=True)
 
             # Extract media files from the response
             if response:

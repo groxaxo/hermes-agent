@@ -29,7 +29,7 @@ from __future__ import annotations
 import logging
 import os
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from hermes_state import SessionDB
 
@@ -85,6 +85,10 @@ def register(
         return False
     now = time.time()
     pid = process_id if process_id is not None else os.getpid()
+    task_type = str(type)
+    requester_text = str(requester) if requester is not None else None
+    session_text = str(session_id) if session_id is not None else None
+    cron_job_text = str(cron_job_id) if cron_job_id is not None else None
     own_db = db is None
     if own_db:
         try:
@@ -107,15 +111,15 @@ def register(
                 (
                     task_id,
                     parent_task_id,
-                    type,
+                    task_type,
                     STATUS_RUNNING,
-                    requester,
-                    session_id,
+                    requester_text,
+                    session_text,
                     _truncate(goal, 4000),
                     now,
                     now,
                     pid,
-                    cron_job_id,
+                    cron_job_text,
                 ),
             )
 
@@ -372,7 +376,7 @@ def list_tasks(
 def mark_stale_running_as_orphaned(
     *,
     max_age_seconds: Optional[float] = None,
-    pid_alive: Optional[callable] = None,
+    pid_alive: Optional[Callable[[int], bool]] = None,
     db: Optional[SessionDB] = None,
 ) -> int:
     """Startup-recovery sweep.

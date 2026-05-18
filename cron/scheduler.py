@@ -1652,8 +1652,9 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
         def _process_job(job: dict) -> bool:
             """Run one due job end-to-end: execute, save, deliver, mark."""
             import time as _time
+            import uuid as _uuid
             from agent import async_tasks as _async_tasks
-            _task_id = f"cron_{job['id']}_{int(_time.time())}"
+            _task_id = f"cron_{job['id']}_{int(_time.time())}_{_uuid.uuid4().hex[:8]}"
             try:
                 _async_tasks.register(
                     _task_id,

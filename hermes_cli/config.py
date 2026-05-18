@@ -1247,6 +1247,13 @@ DEFAULT_CONFIG = {
         "max_parallel_jobs": None,
     },
 
+    # Durable async-task registry retention.  The registry tracks delegate,
+    # background, and cron tasks for /tasklog + TUI task RPCs.  Set to 0 or
+    # null to disable automatic cleanup of terminal rows at gateway startup.
+    "async_tasks": {
+        "retention_days": 30,
+    },
+
     # Kanban multi-agent coordination — controls the dispatcher loop that
     # spawns workers for ready tasks. The dispatcher ticks every N seconds
     # (default 60), reclaims stale claims, promotes dependency-satisfied
