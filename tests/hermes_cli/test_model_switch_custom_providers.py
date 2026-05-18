@@ -567,3 +567,54 @@ def test_custom_providers_uses_live_models_for_multi_model_endpoint(monkeypatch)
         "gateway-model-c",
     ], "Live models must replace the static subset"
     assert gateway_prov["total_models"] == 3
+
+
+def test_list_authenticated_providers_uses_live_models_for_public_custom_provider(monkeypatch):
+    """Saved custom_providers without api_key should refresh from public /models."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    calls = []
+
+    def fake_fetch_api_models(api_key, base_url):
+        calls.append((api_key, base_url))
+        return ["public-model-a", "public-model-b", "public-model-c"]
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)
+
+    custom_providers = [
+        {
+            "name": "public-gateway",
+            "base_url": "http://127.0.0.1:12434/v1",
+            "model": "public-model-a",
+            "models": {
+                "public-model-a": {"context_length": 128000},
+                "public-model-b": {"context_length": 128000},
+            },
+        }
+    ]
+
+    providers = list_authenticated_providers(
+        current_provider="openrouter",
+        current_base_url="https://openrouter.ai/api/v1",
+        custom_providers=custom_providers,
+        max_models=50,
+    )
+
+    gateway_prov = next(
+        (
+            p
+            for p in providers
+            if p.get("api_url") == "http://127.0.0.1:12434/v1"
+        ),
+        None,
+    )
+
+    assert gateway_prov is not None, "Custom provider group not found in results"
+    assert calls == [("", "http://127.0.0.1:12434/v1")]
+    assert gateway_prov["models"] == [
+        "public-model-a",
+        "public-model-b",
+        "public-model-c",
+    ]
+    assert gateway_prov["total_models"] == 3

@@ -133,7 +133,7 @@ def test_list_authenticated_providers_enumerates_dict_format_models(monkeypatch)
 
 def test_list_authenticated_providers_uses_live_models_for_user_provider(monkeypatch):
     """User-defined OpenAI-compatible providers should prefer live /models.
-
+    
     Regression: CRS-style providers with a stale config ``models:`` dict kept
     showing only the configured subset in the /model picker, even though their
     /v1/models endpoint exposed newly added models.
@@ -177,6 +177,52 @@ def test_list_authenticated_providers_uses_live_models_for_user_provider(monkeyp
     assert user_prov is not None
     assert calls == [("sk-test", "http://127.0.0.1:3000/api/v1")]
     assert user_prov["models"] == ["old-configured-model", "new-live-model"]
+    assert user_prov["total_models"] == 2
+
+
+def test_list_authenticated_providers_uses_live_models_for_public_user_provider(monkeypatch):
+    """No-key OpenAI-compatible providers should also refresh from /models.
+
+    Regression: local/public endpoints with stale ``models:`` config showed only
+    the static configured subset because live discovery was gated on api_key.
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    calls = []
+
+    def fake_fetch_api_models(api_key, base_url):
+        calls.append((api_key, base_url))
+        return ["old-configured-model", "new-public-live-model"]
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)
+
+    user_providers = {
+        "public-proxy": {
+            "name": "Public Proxy",
+            "base_url": "http://127.0.0.1:12434/v1",
+            "default_model": "old-configured-model",
+            "models": {
+                "old-configured-model": {"context_length": 200000},
+            },
+        }
+    }
+
+    providers = list_authenticated_providers(
+        current_provider="public-proxy",
+        user_providers=user_providers,
+        custom_providers=[],
+        max_models=50,
+    )
+
+    user_prov = next(
+        (p for p in providers if p.get("is_user_defined") and p["slug"] == "public-proxy"),
+        None,
+    )
+
+    assert user_prov is not None
+    assert calls == [("", "http://127.0.0.1:12434/v1")]
+    assert user_prov["models"] == ["old-configured-model", "new-public-live-model"]
     assert user_prov["total_models"] == 2
 
 

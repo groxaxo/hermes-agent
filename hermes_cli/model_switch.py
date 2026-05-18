@@ -1095,6 +1095,36 @@ def list_authenticated_providers(
     def _norm_url(url: str) -> str:
         return str(url or "").strip().rstrip("/").lower()
 
+    def _allows_no_key_model_discovery(url: str) -> bool:
+        """Permit unauthenticated /models probes only for local/private endpoints.
+
+        Public hosted providers often expose huge catalogs or require auth. No-key
+        dynamic discovery is intended for local LAN/Tailscale/OpenAI-compatible
+        proxies such as 127.0.0.1, RFC1918, and 100.64.0.0/10 CGNAT/tailnet IPs.
+        """
+        try:
+            from ipaddress import ip_address, ip_network
+            from urllib.parse import urlparse
+
+            host = (urlparse(str(url or "")).hostname or "").strip().lower()
+            if host in {"localhost", "::1"}:
+                return True
+            ip = ip_address(host)
+            return bool(
+                ip.is_loopback
+                or ip.is_private
+                or ip in ip_network("100.64.0.0/10")
+            )
+        except Exception:
+            return False
+
+    def _should_fetch_live_models(url: str, api_key: str, discover: object = True) -> bool:
+        if isinstance(discover, str):
+            discover = discover.lower() not in ("false", "no", "0")
+        if not discover or not url:
+            return False
+        return bool(api_key) or _allows_no_key_model_discovery(url)
+
     def _record_builtin_endpoint(slug: str) -> None:
         """Record the effective base URL for a built-in provider row.
 
@@ -1505,18 +1535,15 @@ def list_authenticated_providers(
                     if fb:
                         models_list = list(fb)
 
-            # Prefer the endpoint's live /models list when credentials are
-            # available, unless the provider explicitly opts out via
-            # discover_models: false (e.g. dedicated endpoints that expose
-            # the entire aggregator catalog via /models).
+            # Prefer the endpoint's live /models list unless explicitly opted
+            # out via discover_models: false. api_key is optional for local,
+            # private, and tailnet OpenAI-compatible proxies.
             api_key = str(ep_cfg.get("api_key", "") or "").strip()
             if not api_key:
                 key_env = str(ep_cfg.get("key_env", "") or "").strip()
                 api_key = os.environ.get(key_env, "").strip() if key_env else ""
             discover = ep_cfg.get("discover_models", True)
-            if isinstance(discover, str):
-                discover = discover.lower() not in ("false", "no", "0")
-            if api_url and api_key and discover:
+            if _should_fetch_live_models(api_url, api_key, discover):
                 try:
                     from hermes_cli.models import fetch_api_models
                     live_models = fetch_api_models(api_key, api_url)
@@ -1677,8 +1704,9 @@ def list_authenticated_providers(
             if _grp_url_norm and _grp_url_norm in _builtin_endpoints:
                 continue
             # Live model discovery from custom provider endpoints (matches
-            # Section 3 behavior for user ``providers:`` entries).
-            if api_url and api_key:
+            # Section 3 behavior for user ``providers:`` entries). api_key is
+            # optional for local/private/tailnet OpenAI-compatible proxies.
+            if _should_fetch_live_models(api_url, api_key):
                 try:
                     from hermes_cli.models import fetch_api_models
 
