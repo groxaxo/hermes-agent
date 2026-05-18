@@ -5702,6 +5702,9 @@ class GatewayRunner:
         if canonical == "tasklog":
             return await self._handle_tasklog_command(event)
 
+        if canonical == "team":
+            return await self._handle_team_command(event)
+
         if canonical == "title":
             return await self._handle_title_command(event)
 
@@ -11562,6 +11565,10 @@ class GatewayRunner:
 
         def _collect():
             try:
+                if status_filter == "dead":
+                    return _async_tasks.dead_letter_tasks(limit=20)
+                if status_filter == "digest":
+                    return {"digest": _async_tasks.digest(limit=50)}
                 return _async_tasks.list_tasks(status=status_filter, limit=20)
             except Exception as exc:
                 return exc
@@ -11570,6 +11577,8 @@ class GatewayRunner:
         rows = await loop.run_in_executor(None, _collect)
         if isinstance(rows, Exception):
             return f"✗ failed to list tasks: {rows}"
+        if isinstance(rows, dict) and "digest" in rows:
+            return "**Async task digest:**\n```\n" + json.dumps(rows["digest"], indent=2) + "\n```"
         if not rows:
             return ("(no async tasks recorded yet)" if not status_filter
                     else f"(no async tasks with status={status_filter})")
@@ -11595,6 +11604,25 @@ class GatewayRunner:
             lines.append(f"{tid:<32} {typ:<11} {stat:<10} {age_s:<6} {goal}")
         lines.append("```")
         return "\n".join(lines)
+
+    async def _handle_team_command(self, event: MessageEvent) -> str:
+        """Handle /team <name> <prompt> using the active session's agent."""
+        raw = event.get_command_args().strip()
+        parts = raw.split(maxsplit=1)
+        if len(parts) < 2:
+            return "Usage: /team <name> <prompt>"
+        team_name, prompt = parts[0], parts[1]
+        session_key = self._session_key_for_source(event.source)
+        agent = (getattr(self, "_running_agents", {}) or {}).get(session_key)
+        if agent is None or agent is _AGENT_PENDING_SENTINEL:
+            return "✗ /team requires an active agent turn in this chat. Use the team tool from within a chat turn or start a normal prompt first."
+        try:
+            from hermes_cli.config import load_config
+            from agent.team_runner import run_team_delegate
+
+            return run_team_delegate(load_config() or {}, team_name, prompt, parent_agent=agent)
+        except Exception as exc:
+            return f"✗ team fanout failed: {exc}"
 
     async def _handle_update_command(self, event: MessageEvent) -> str:
         """Handle /update command — update Hermes Agent to the latest version.

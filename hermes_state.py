@@ -33,7 +33,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -126,6 +126,10 @@ CREATE TABLE IF NOT EXISTS async_tasks (
     api_calls INTEGER DEFAULT 0,
     process_id INTEGER,
     cron_job_id TEXT,
+    purpose TEXT,
+    budget_usd REAL,
+    cache_key TEXT,
+    cache_hit INTEGER DEFAULT 0,
     expiry_at REAL,
     archive_at REAL,
     announced_at REAL,
@@ -136,6 +140,21 @@ CREATE INDEX IF NOT EXISTS idx_async_tasks_status ON async_tasks(status);
 CREATE INDEX IF NOT EXISTS idx_async_tasks_parent ON async_tasks(parent_task_id);
 CREATE INDEX IF NOT EXISTS idx_async_tasks_started ON async_tasks(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_async_tasks_type_status ON async_tasks(type, status);
+
+CREATE TABLE IF NOT EXISTS async_task_cache (
+    cache_key TEXT PRIMARY KEY,
+    purpose TEXT,
+    goal TEXT,
+    context_hash TEXT,
+    result_summary TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    expires_at REAL,
+    hit_count INTEGER DEFAULT 0,
+    last_hit_at REAL,
+    source_task_id TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_async_task_cache_expires ON async_task_cache(expires_at);
 """
 
 FTS_SQL = """

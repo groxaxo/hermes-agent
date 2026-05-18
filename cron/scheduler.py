@@ -1661,6 +1661,8 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                     type=_async_tasks.TYPE_CRON,
                     goal=job.get("prompt") or job.get("name"),
                     cron_job_id=job["id"],
+                    purpose=job.get("purpose"),
+                    budget_usd=job.get("budget_usd"),
                 )
             except Exception:
                 logger.debug("async_tasks.register failed for cron", exc_info=True)

@@ -207,3 +207,75 @@ def test_register_with_missing_args_returns_false():
 
 def test_get_unknown_task_returns_none():
     assert async_tasks.get("does-not-exist-" + uuid.uuid4().hex) is None
+
+
+def test_register_records_purpose_budget_and_cache_metadata():
+    tid = _prefix() + "meta"
+    async_tasks.register(
+        tid,
+        type=async_tasks.TYPE_DELEGATE,
+        goal="meta",
+        purpose="code",
+        budget_usd=0.5,
+        cache_key="abc",
+        cache_hit=True,
+    )
+    row = async_tasks.get(tid)
+    assert row["purpose"] == "code"
+    assert row["budget_usd"] == 0.5
+    assert row["cache_key"] == "abc"
+    assert row["cache_hit"] == 1
+
+
+def test_dead_letter_tasks_and_digest_summarize_recent_rows():
+    pre = _prefix()
+    failed = pre + "failed"
+    ok = pre + "ok"
+    async_tasks.register(failed, type=async_tasks.TYPE_CRON, goal="bad")
+    async_tasks.fail(failed, error="boom")
+    async_tasks.register(ok, type=async_tasks.TYPE_BACKGROUND, goal="good")
+    async_tasks.complete(ok, result_summary="done", cost_usd=0.25)
+
+    dead_ids = {r["task_id"] for r in async_tasks.dead_letter_tasks(limit=1000)}
+    assert failed in dead_ids
+    summary = async_tasks.digest(limit=1000)
+    assert summary["by_status"][async_tasks.STATUS_FAILED] >= 1
+    assert summary["by_type"][async_tasks.TYPE_BACKGROUND] >= 1
+    assert summary["estimated_cost_usd"] >= 0.25
+    assert summary["dead_letters"] >= 1
+
+
+def test_async_task_cache_round_trip_and_expiry():
+    key = async_tasks.cache_key_for_task(
+        goal="same task",
+        context="same context",
+        purpose="code",
+        workdir="/repo",
+        model="m",
+    )
+    assert key == async_tasks.cache_key_for_task(
+        goal="same task",
+        context="same context",
+        purpose="code",
+        workdir="/repo",
+        model="m",
+    )
+    assert async_tasks.store_cached_result(
+        cache_key=key,
+        result_summary="cached result",
+        goal="same task",
+        purpose="code",
+        ttl_seconds=60,
+    )
+    hit = async_tasks.get_cached_result(key)
+    assert hit is not None
+    assert hit["result_summary"] == "cached result"
+    assert hit["hit_count"] >= 1
+
+    expired_key = key + "expired"
+    assert async_tasks.store_cached_result(
+        cache_key=expired_key,
+        result_summary="expired",
+        ttl_seconds=-1,
+    )
+    assert async_tasks.get_cached_result(expired_key) is None

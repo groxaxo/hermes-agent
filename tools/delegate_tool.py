@@ -884,6 +884,9 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    purpose: Optional[str] = None,
+    budget_usd: Optional[float] = None,
+    policy: Optional[Dict[str, Any]] = None,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -962,6 +965,20 @@ def _build_child_agent(
     # test_intersection_preserves_delegation_bound test for the design rationale.
     if effective_role == "orchestrator" and "delegation" not in child_toolsets:
         child_toolsets.append("delegation")
+
+    # Additive policy: teams/delegation can narrow child toolsets but never
+    # expand beyond the parent-derived set. Deny wins over allow.
+    try:
+        from hermes_cli.config import load_config as _load_full_config
+        from agent.policy import apply_toolset_policy, merge_policies
+
+        _full_cfg = _load_full_config() or {}
+        _default_policy = (_full_cfg.get("agents") or {}).get("default_policy") or {}
+        _delegation_policy = (_full_cfg.get("delegation") or {}).get("policy") or {}
+        _merged_policy = merge_policies(_default_policy, _delegation_policy, policy or {})
+        child_toolsets = apply_toolset_policy(child_toolsets, _merged_policy)
+    except Exception:
+        logger.debug("delegate_task: toolset policy application failed", exc_info=True)
 
     workspace_hint = _resolve_workspace_hint(parent_agent)
     child_prompt = _build_child_system_prompt(
@@ -1126,6 +1143,9 @@ def _build_child_agent(
     child._subagent_id = subagent_id
     child._parent_subagent_id = parent_subagent_id
     child._subagent_goal = goal
+    child._autonomy_purpose = purpose
+    child._autonomy_budget_usd = budget_usd
+    child._toolset_policy = policy or {}
 
     # Share a credential pool with the child when possible so subagents can
     # rotate credentials on rate limits instead of getting pinned to one key.
@@ -1471,6 +1491,8 @@ def _run_single_child(
                 type=_async_tasks.TYPE_DELEGATE,
                 goal=goal,
                 parent_task_id=parent_task_id,
+                purpose=getattr(child, "_autonomy_purpose", None),
+                budget_usd=getattr(child, "_autonomy_budget_usd", None),
             )
         except Exception:
             logger.debug("async_tasks.register failed for delegate", exc_info=True)
@@ -1939,6 +1961,9 @@ def delegate_task(
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
+    purpose: Optional[str] = None,
+    budget_usd: Optional[float] = None,
+    policy: Optional[Dict[str, Any]] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -2012,6 +2037,18 @@ def delegate_task(
     except ValueError as exc:
         return tool_error(str(exc))
 
+    try:
+        from hermes_cli.config import load_config as _load_full_config
+        from agent.cost_policy import infer_purpose, normalize_purpose, resolve_budget_usd, resolve_purpose_route
+
+        _full_cfg = _load_full_config() or {}
+    except Exception:
+        _full_cfg = {}
+        infer_purpose = lambda text: "general"  # type: ignore
+        normalize_purpose = lambda value: value or "general"  # type: ignore
+        resolve_budget_usd = lambda *a, **kw: kw.get("explicit_budget_usd")  # type: ignore
+        resolve_purpose_route = lambda *a, **kw: None  # type: ignore
+
     # Normalize to task list
     max_children = _get_max_concurrent_children()
     if tasks and isinstance(tasks, list):
@@ -2026,7 +2063,15 @@ def delegate_task(
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
         task_list = [
-            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role}
+            {
+                "goal": goal,
+                "context": context,
+                "toolsets": toolsets,
+                "role": top_role,
+                "purpose": purpose,
+                "budget_usd": budget_usd,
+                "policy": policy or {},
+            }
         ]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
@@ -2038,6 +2083,25 @@ def delegate_task(
     for i, task in enumerate(task_list):
         if not task.get("goal", "").strip():
             return tool_error(f"Task {i} is missing a 'goal'.")
+        _purpose = normalize_purpose(task.get("purpose") or purpose or infer_purpose(task.get("goal")))
+        task["purpose"] = _purpose
+        _route = resolve_purpose_route(
+            _full_cfg,
+            purpose=_purpose,
+            current_provider=creds.get("provider") or getattr(parent_agent, "provider", None),
+            current_model=creds.get("model") or getattr(parent_agent, "model", None),
+        )
+        if _route is not None:
+            if getattr(_route, "toolsets", None) and not task.get("toolsets"):
+                task["toolsets"] = list(_route.toolsets or [])
+            if getattr(_route, "model", None) and not task.get("model") and not creds.get("model"):
+                task["model"] = _route.model
+        task["budget_usd"] = resolve_budget_usd(
+            _full_cfg,
+            purpose=_purpose,
+            explicit_budget_usd=task.get("budget_usd") or budget_usd,
+            kind="subagent",
+        )
 
     overall_start = time.monotonic()
     results = []
@@ -2068,7 +2132,7 @@ def delegate_task(
                 goal=t["goal"],
                 context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets,
-                model=creds["model"],
+                model=t.get("model") or creds["model"],
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
@@ -2085,6 +2149,9 @@ def delegate_task(
                     else (acp_args if acp_args is not None else creds.get("args"))
                 ),
                 role=effective_role,
+                purpose=t.get("purpose"),
+                budget_usd=t.get("budget_usd"),
+                policy=t.get("policy") or policy or {},
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
@@ -2574,6 +2641,18 @@ DELEGATE_TASK_SCHEMA = {
                             "items": {"type": "string"},
                             "description": f"Toolsets for this specific task. Available: {_TOOLSET_LIST_STR}. Use 'web' for network access, 'terminal' for shell, 'browser' for web interaction.",
                         },
+                        "purpose": {
+                            "type": "string",
+                            "description": "Optional purpose hint for routing/budget metadata (research, code, review, test, plan, summarize, execute, general).",
+                        },
+                        "budget_usd": {
+                            "type": "number",
+                            "description": "Optional per-task budget metadata in USD. Recorded for task tracking; enforcement is opt-in via config.",
+                        },
+                        "policy": {
+                            "type": "object",
+                            "description": "Optional additive child policy with allow_toolsets/deny_toolsets/allow_tools/deny_tools. Deny takes precedence.",
+                        },
                         "acp_command": {
                             "type": "string",
                             "description": "Per-task ACP command override (e.g. 'copilot'). Overrides the top-level acp_command for this task only.",
@@ -2612,6 +2691,18 @@ DELEGATE_TASK_SCHEMA = {
                     "max_spawn_depth or when "
                     "delegation.orchestrator_enabled=false."
                 ),
+            },
+            "purpose": {
+                "type": "string",
+                "description": "Optional purpose hint for routing/budget metadata (research, code, review, test, plan, summarize, execute, general).",
+            },
+            "budget_usd": {
+                "type": "number",
+                "description": "Optional budget metadata in USD for this delegated work. Recorded for /tasklog and reliability digests.",
+            },
+            "policy": {
+                "type": "object",
+                "description": "Optional additive child policy with allow_toolsets/deny_toolsets/allow_tools/deny_tools. Deny takes precedence.",
             },
             "acp_command": {
                 "type": "string",
@@ -2653,6 +2744,9 @@ registry.register(
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
         role=args.get("role"),
+        purpose=args.get("purpose"),
+        budget_usd=args.get("budget_usd"),
+        policy=args.get("policy"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

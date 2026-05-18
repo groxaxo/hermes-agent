@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import logging
 import os
+import hashlib
 import time
 from typing import Any, Callable, Dict, List, Optional
 
@@ -72,6 +73,10 @@ def register(
     requester: Optional[str] = None,
     session_id: Optional[str] = None,
     cron_job_id: Optional[str] = None,
+    purpose: Optional[str] = None,
+    budget_usd: Optional[float] = None,
+    cache_key: Optional[str] = None,
+    cache_hit: bool = False,
     process_id: Optional[int] = None,
     db: Optional[SessionDB] = None,
 ) -> bool:
@@ -89,6 +94,7 @@ def register(
     requester_text = str(requester) if requester is not None else None
     session_text = str(session_id) if session_id is not None else None
     cron_job_text = str(cron_job_id) if cron_job_id is not None else None
+    purpose_text = str(purpose) if purpose is not None else None
     own_db = db is None
     if own_db:
         try:
@@ -103,9 +109,9 @@ def register(
                 INSERT INTO async_tasks (
                     task_id, parent_task_id, type, status, requester,
                     session_id, goal, started_at, last_heartbeat_at,
-                    process_id, cron_job_id
+                    process_id, cron_job_id, purpose, budget_usd, cache_key, cache_hit
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(task_id) DO NOTHING
                 """,
                 (
@@ -120,6 +126,10 @@ def register(
                     now,
                     pid,
                     cron_job_text,
+                    purpose_text,
+                    float(budget_usd) if budget_usd is not None else None,
+                    cache_key,
+                    1 if cache_hit else 0,
                 ),
             )
 
@@ -365,6 +375,159 @@ def list_tasks(
     except Exception as exc:
         logger.debug("async_tasks.list_tasks failed: %s", exc)
         return []
+
+
+def dead_letter_tasks(
+    *,
+    statuses: Optional[list[str]] = None,
+    limit: int = 50,
+    db: Optional[SessionDB] = None,
+) -> List[Dict[str, Any]]:
+    """Return failed/orphaned/expired tasks that require operator attention."""
+    statuses = statuses or [STATUS_FAILED, STATUS_ORPHANED, STATUS_EXPIRED]
+    rows: list[dict[str, Any]] = []
+    for status in statuses:
+        rows.extend(list_tasks(status=status, limit=limit, db=db))
+    rows.sort(key=lambda r: float(r.get("finished_at") or r.get("started_at") or 0), reverse=True)
+    return rows[: max(1, int(limit))]
+
+
+def digest(*, limit: int = 50, db: Optional[SessionDB] = None) -> Dict[str, Any]:
+    """Summarize recent durable async-task activity."""
+    rows = list_tasks(limit=limit, db=db)
+    by_status: dict[str, int] = {}
+    by_type: dict[str, int] = {}
+    total_cost = 0.0
+    cache_hits = 0
+    for row in rows:
+        by_status[row.get("status") or "unknown"] = by_status.get(row.get("status") or "unknown", 0) + 1
+        by_type[row.get("type") or "unknown"] = by_type.get(row.get("type") or "unknown", 0) + 1
+        try:
+            total_cost += float(row.get("cost_usd") or 0.0)
+        except (TypeError, ValueError):
+            pass
+        if row.get("cache_hit"):
+            cache_hits += 1
+    return {
+        "count": len(rows),
+        "by_status": by_status,
+        "by_type": by_type,
+        "estimated_cost_usd": round(total_cost, 6),
+        "cache_hits": cache_hits,
+        "dead_letters": len(dead_letter_tasks(limit=limit, db=db)),
+    }
+
+
+def cache_key_for_task(
+    *,
+    goal: str,
+    context: Optional[str] = None,
+    purpose: Optional[str] = None,
+    workdir: Optional[str] = None,
+    model: Optional[str] = None,
+) -> str:
+    """Build a stable, non-secret cache key for a distilled task result."""
+    h = hashlib.sha256()
+    for part in (purpose or "", model or "", workdir or "", goal or "", context or ""):
+        h.update(part.encode("utf-8", errors="replace"))
+        h.update(b"\0")
+    return h.hexdigest()
+
+
+def store_cached_result(
+    *,
+    cache_key: str,
+    result_summary: str,
+    goal: Optional[str] = None,
+    context_hash: Optional[str] = None,
+    purpose: Optional[str] = None,
+    ttl_seconds: Optional[float] = None,
+    source_task_id: Optional[str] = None,
+    db: Optional[SessionDB] = None,
+) -> bool:
+    if not cache_key or not result_summary:
+        return False
+    now = time.time()
+    expires_at = now + float(ttl_seconds) if ttl_seconds else None
+    own_db = db is None
+    if own_db:
+        try:
+            db = SessionDB()
+        except Exception:
+            return False
+    try:
+        def _write(conn):
+            conn.execute(
+                """
+                INSERT INTO async_task_cache (
+                    cache_key, purpose, goal, context_hash, result_summary,
+                    created_at, expires_at, source_task_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(cache_key) DO UPDATE SET
+                    purpose = excluded.purpose,
+                    goal = excluded.goal,
+                    context_hash = excluded.context_hash,
+                    result_summary = excluded.result_summary,
+                    created_at = excluded.created_at,
+                    expires_at = excluded.expires_at,
+                    source_task_id = excluded.source_task_id
+                """,
+                (
+                    cache_key,
+                    purpose,
+                    _truncate(goal, 4000),
+                    context_hash,
+                    _truncate(result_summary, 4000),
+                    now,
+                    expires_at,
+                    source_task_id,
+                ),
+            )
+        db._execute_write(_write)
+        return True
+    except Exception as exc:
+        logger.debug("async_tasks.store_cached_result failed: %s", exc)
+        return False
+    finally:
+        if own_db and db is not None:
+            try:
+                db.close()
+            except Exception:
+                pass
+
+
+def get_cached_result(cache_key: str, *, db: Optional[SessionDB] = None) -> Optional[Dict[str, Any]]:
+    if not cache_key:
+        return None
+    own_db = db is None
+    if own_db:
+        try:
+            db = SessionDB()
+        except Exception:
+            return None
+    try:
+        now = time.time()
+        row = db._conn.execute(
+            "SELECT * FROM async_task_cache WHERE cache_key = ?",
+            (cache_key,),
+        ).fetchone()
+        if not row:
+            return None
+        data = dict(row)
+        if data.get("expires_at") is not None and float(data["expires_at"]) < now:
+            return None
+        def _hit(conn):
+            conn.execute(
+                "UPDATE async_task_cache SET hit_count = COALESCE(hit_count, 0) + 1, last_hit_at = ? WHERE cache_key = ?",
+                (now, cache_key),
+            )
+        db._execute_write(_hit)
+        data["hit_count"] = int(data.get("hit_count") or 0) + 1
+        data["last_hit_at"] = now
+        return data
+    except Exception as exc:
+        logger.debug("async_tasks.get_cached_result failed: %s", exc)
+        return None
     finally:
         if own_db and db is not None:
             try:

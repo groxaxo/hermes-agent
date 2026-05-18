@@ -1546,6 +1546,25 @@ def test_task_describe_requires_task_id():
     assert "task_id required" in resp["error"]["message"]
 
 
+def test_task_reliability_rpcs_return_dead_letters_and_digest():
+    from agent import async_tasks
+
+    task_id = f"tui-failed-{time.time_ns()}"
+    assert async_tasks.register(task_id, type=async_tasks.TYPE_CRON, goal="bad cron")
+    async_tasks.fail(task_id, error="boom")
+
+    dead = server.handle_request(
+        {"id": "dead", "method": "task.dead_letters", "params": {"limit": 100}}
+    )
+    assert any(row["task_id"] == task_id for row in dead["result"]["tasks"])
+
+    digest = server.handle_request(
+        {"id": "digest", "method": "task.digest", "params": {"limit": 100}}
+    )
+    assert digest["result"]["dead_letters"] >= 1
+    assert digest["result"]["by_status"][async_tasks.STATUS_FAILED] >= 1
+
+
 def test_setup_status_reports_provider_config(monkeypatch):
     monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda: False)
 

@@ -2778,6 +2778,31 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5013, f"task describe failed: {e}")
 
 
+@method("task.dead_letters")
+def _(rid, params: dict) -> dict:
+    """List durable async tasks that need operator attention."""
+    try:
+        from agent import async_tasks as _async_tasks
+
+        limit = int(params.get("limit", 50) or 50)
+        rows = _async_tasks.dead_letter_tasks(limit=max(1, min(limit, 200)))
+        return _ok(rid, {"tasks": rows, "count": len(rows)})
+    except Exception as e:
+        return _err(rid, 5014, f"task dead-letter query failed: {e}")
+
+
+@method("task.digest")
+def _(rid, params: dict) -> dict:
+    """Summarize recent durable async task activity."""
+    try:
+        from agent import async_tasks as _async_tasks
+
+        limit = int(params.get("limit", 50) or 50)
+        return _ok(rid, _async_tasks.digest(limit=max(1, min(limit, 200))))
+    except Exception as e:
+        return _err(rid, 5015, f"task digest failed: {e}")
+
+
 @method("subagent.interrupt")
 def _(rid, params: dict) -> dict:
     from tools.delegate_tool import interrupt_subagent

@@ -274,6 +274,8 @@ def cronjob(
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     no_agent: Optional[bool] = None,
+    purpose: Optional[str] = None,
+    budget_usd: Optional[float] = None,
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""
@@ -341,6 +343,8 @@ def cronjob(
                 enabled_toolsets=enabled_toolsets or None,
                 workdir=_normalize_optional_job_value(workdir),
                 no_agent=_no_agent,
+                purpose=_normalize_optional_job_value(purpose),
+                budget_usd=budget_usd,
             )
             return json.dumps(
                 {
@@ -607,6 +611,14 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "type": "string",
                 "description": "Optional absolute path to run the job from. When set, AGENTS.md / CLAUDE.md / .cursorrules from that directory are injected into the system prompt, and the terminal/file/code_exec tools use it as their working directory — useful for running a job inside a specific project repo. Must be an absolute path that exists. When unset (default), preserves the original behaviour: no project context files, tools use the scheduler's cwd. On update, pass an empty string to clear. Jobs with workdir run sequentially (not parallel) to keep per-job directories isolated."
             },
+            "purpose": {
+                "type": "string",
+                "description": "Optional purpose hint for routing/budget metadata (research, code, review, test, plan, summarize, execute, general)."
+            },
+            "budget_usd": {
+                "type": "number",
+                "description": "Optional per-run budget metadata in USD. Recorded for task tracking and reliability digests."
+            },
         },
         "required": ["action"]
     }
@@ -655,6 +667,8 @@ registry.register(
         enabled_toolsets=args.get("enabled_toolsets"),
         workdir=args.get("workdir"),
         no_agent=args.get("no_agent"),
+        purpose=args.get("purpose"),
+        budget_usd=args.get("budget_usd"),
         task_id=kw.get("task_id"),
     ))(),
     check_fn=check_cronjob_requirements,

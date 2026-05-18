@@ -6826,6 +6826,8 @@ class HermesCLI:
             self._handle_debug_command()
         elif canonical == "tasklog":
             self._handle_tasklog_command(cmd_original)
+        elif canonical == "team":
+            self._handle_team_command(cmd_original)
         elif canonical == "paste":
             self._handle_paste_command()
         elif canonical == "image":
@@ -7989,7 +7991,13 @@ class HermesCLI:
         parts = cmd_original.split()
         status_filter = parts[1] if len(parts) > 1 else None
         try:
-            rows = _async_tasks.list_tasks(status=status_filter, limit=20)
+            if status_filter == "dead":
+                rows = _async_tasks.dead_letter_tasks(limit=20)
+            elif status_filter == "digest":
+                print(_async_tasks.digest(limit=50))
+                return
+            else:
+                rows = _async_tasks.list_tasks(status=status_filter, limit=20)
         except Exception as e:
             print(f"(._.) failed to list tasks: {e}")
             return
@@ -8017,6 +8025,24 @@ class HermesCLI:
                 age_s = f"{age // 86400}d"
             goal = (r.get("goal") or "")[:50].replace("\n", " ")
             print(f"{tid:<32} {typ:<11} {stat:<10} {age_s:<8} {goal}")
+
+    def _handle_team_command(self, cmd_original: str):
+        """Handle /team <name> <prompt> via delegate_task batch fanout."""
+        if not self.agent:
+            print("(._.) /team requires an active chat session; send a message first.")
+            return
+        parts = cmd_original.split(maxsplit=2)
+        if len(parts) < 3:
+            print("Usage: /team <name> <prompt>")
+            return
+        team_name, prompt = parts[1], parts[2]
+        try:
+            from hermes_cli.config import load_config
+            from agent.team_runner import run_team_delegate
+
+            print(run_team_delegate(load_config() or {}, team_name, prompt, parent_agent=self.agent))
+        except Exception as e:
+            print(f"(._.) team fanout failed: {e}")
 
     def _show_usage(self):
         """Show rate limits (if available) and session token usage."""
