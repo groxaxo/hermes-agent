@@ -1247,6 +1247,66 @@ DEFAULT_CONFIG = {
         "max_parallel_jobs": None,
     },
 
+    # Durable async-task registry retention.  The registry tracks delegate,
+    # background, and cron tasks for /tasklog + TUI task RPCs.  Set to 0 or
+    # null to disable automatic cleanup of terminal rows at gateway startup.
+    "async_tasks": {
+        "retention_days": 30,
+    },
+
+    # Purpose-aware routing is opt-in and applies only at task boundaries
+    # (delegation/team/cron/background).  It never mutates an in-flight model
+    # call, preserving prompt-cache stability.
+    "purpose_routing": {
+        "enabled": False,
+        "purposes": {
+            "general": {},
+            "research": {},
+            "code": {},
+            "review": {},
+            "test": {},
+            "plan": {},
+            "summarize": {},
+            "execute": {},
+        },
+    },
+
+    # Budget policy metadata for autonomous work.  Disabled by default: callers
+    # record budgets/purposes but do not block work unless explicitly enabled in
+    # future enforcement surfaces.
+    "cost_policy": {
+        "enabled": False,
+        "mode": "alert",  # alert | pause | downgrade
+        "default_task_budget_usd": None,
+        "default_subagent_budget_usd": None,
+        "default_cron_budget_usd": None,
+        "warning_threshold": 0.8,
+        "purpose_budgets": {},
+        "downgrade_tiers": {},
+    },
+
+    # Multi-agent team fanout configuration.  Teams reuse existing primitives:
+    # delegate_task batch mode, profiles as hints, toolsets, purposes, budgets,
+    # and additive policy.  Empty by default.
+    "agents": {
+        "default_policy": {
+            "allow_toolsets": [],
+            "deny_toolsets": [],
+            "allow_tools": [],
+            "deny_tools": [],
+        },
+    },
+    "teams": {},
+
+    # Reliability operating layer: dead-letter/digest/cache features are all
+    # opt-in or operator-triggered; no infinite retry loops.
+    "reliability": {
+        "subagent_cache_enabled": False,
+        "subagent_cache_ttl_seconds": 86400,
+        "dead_letter_statuses": ["failed", "orphaned", "expired"],
+        "digest_limit": 50,
+    },
+
     # Kanban multi-agent coordination — controls the dispatcher loop that
     # spawns workers for ready tasks. The dispatcher ticks every N seconds
     # (default 60), reclaims stale claims, promotes dependency-satisfied

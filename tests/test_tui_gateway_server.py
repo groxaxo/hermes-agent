@@ -1504,6 +1504,67 @@ def test_enable_gateway_prompts_sets_gateway_env(monkeypatch):
     assert server.os.environ["HERMES_INTERACTIVE"] == "1"
 
 
+def test_task_rpc_lists_and_describes_durable_async_tasks():
+    from agent import async_tasks
+
+    parent = f"tui-parent-{time.time_ns()}"
+    task_id = f"tui-task-{time.time_ns()}"
+    assert async_tasks.register(
+        task_id,
+        type=async_tasks.TYPE_DELEGATE,
+        goal="inspect durable task RPC",
+        parent_task_id=parent,
+    )
+
+    listed = server.handle_request(
+        {
+            "id": "list",
+            "method": "task.list",
+            "params": {"parent_task_id": parent, "limit": 10},
+        }
+    )
+    assert listed["result"]["count"] == 1
+    assert listed["result"]["tasks"][0]["task_id"] == task_id
+
+    described = server.handle_request(
+        {
+            "id": "describe",
+            "method": "task.describe",
+            "params": {"task_id": task_id},
+        }
+    )
+    assert described["result"]["task"]["task_id"] == task_id
+    assert described["result"]["task"]["goal"] == "inspect durable task RPC"
+
+
+def test_task_describe_requires_task_id():
+    resp = server.handle_request(
+        {"id": "describe", "method": "task.describe", "params": {}}
+    )
+
+    assert resp["error"]["code"] == 4000
+    assert "task_id required" in resp["error"]["message"]
+
+
+def test_task_reliability_rpcs_return_dead_letters_and_digest():
+    from agent import async_tasks
+
+    task_id = f"tui-failed-{time.time_ns()}"
+    assert async_tasks.register(task_id, type=async_tasks.TYPE_CRON, goal="bad cron")
+    async_tasks.fail(task_id, error="boom")
+
+    dead = server.handle_request(
+        {"id": "dead", "method": "task.dead_letters", "params": {"limit": 100}}
+    )
+    assert any(row["task_id"] == task_id for row in dead["result"]["tasks"])
+
+    digest = server.handle_request(
+        {"id": "digest", "method": "task.digest", "params": {"limit": 100}}
+    )
+    assert digest["result"]["dead_letters"] >= 1
+    assert digest["result"]["by_status"][async_tasks.STATUS_FAILED] >= 1
+
+
 def test_setup_status_reports_provider_config(monkeypatch):
     monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda: False)
 

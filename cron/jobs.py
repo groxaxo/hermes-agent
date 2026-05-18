@@ -436,6 +436,8 @@ def create_job(
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     no_agent: bool = False,
+    purpose: Optional[str] = None,
+    budget_usd: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -480,6 +482,8 @@ def create_job(
                 and deliver its stdout directly. Empty stdout = silent (no
                 delivery). Requires ``script`` to be set. Ideal for classic
                 watchdogs and periodic alerts that don't need LLM reasoning.
+        purpose: Optional purpose hint for routing/budget metadata.
+        budget_usd: Optional per-run budget metadata in USD.
 
     Returns:
         The created job dict
@@ -514,6 +518,12 @@ def create_job(
     normalized_toolsets = normalized_toolsets or None
     normalized_workdir = _normalize_workdir(workdir)
     normalized_no_agent = bool(no_agent)
+    normalized_purpose = str(purpose).strip() if isinstance(purpose, str) else None
+    normalized_purpose = normalized_purpose or None
+    try:
+        normalized_budget = float(budget_usd) if budget_usd is not None else None
+    except (TypeError, ValueError):
+        normalized_budget = None
 
     # no_agent jobs are meaningless without a script — the script IS the job.
     # Surface this as a clear ValueError at create time so bad configs never
@@ -566,6 +576,8 @@ def create_job(
         "origin": origin,  # Tracks where job was created for "origin" delivery
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
+        "purpose": normalized_purpose,
+        "budget_usd": normalized_budget,
     }
 
     jobs = load_jobs()

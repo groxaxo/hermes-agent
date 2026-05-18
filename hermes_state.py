@@ -33,7 +33,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 13
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -98,6 +98,63 @@ CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
+
+-- Durable async-task registry (Phase 2 of autonomy roadmap).
+-- Tracks long-running work spawned outside the foreground conversation:
+--   type='delegate'   → subagent spawned by delegate_task
+--   type='background' → /background gateway command
+--   type='cron'       → scheduled job execution
+-- Rows survive process crashes so a startup sweep can mark stale 'running'
+-- rows as 'orphaned' and surface them in /tasks.
+CREATE TABLE IF NOT EXISTS async_tasks (
+    task_id TEXT PRIMARY KEY,
+    parent_task_id TEXT,
+    type TEXT NOT NULL,
+    status TEXT NOT NULL,
+    requester TEXT,
+    session_id TEXT,
+    goal TEXT,
+    started_at REAL NOT NULL,
+    finished_at REAL,
+    last_heartbeat_at REAL,
+    output_preview TEXT,
+    result_summary TEXT,
+    error TEXT,
+    cost_usd REAL,
+    input_tokens INTEGER DEFAULT 0,
+    output_tokens INTEGER DEFAULT 0,
+    api_calls INTEGER DEFAULT 0,
+    process_id INTEGER,
+    cron_job_id TEXT,
+    purpose TEXT,
+    budget_usd REAL,
+    cache_key TEXT,
+    cache_hit INTEGER DEFAULT 0,
+    expiry_at REAL,
+    archive_at REAL,
+    announced_at REAL,
+    announce_status TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_async_tasks_status ON async_tasks(status);
+CREATE INDEX IF NOT EXISTS idx_async_tasks_parent ON async_tasks(parent_task_id);
+CREATE INDEX IF NOT EXISTS idx_async_tasks_started ON async_tasks(started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_async_tasks_type_status ON async_tasks(type, status);
+
+CREATE TABLE IF NOT EXISTS async_task_cache (
+    cache_key TEXT PRIMARY KEY,
+    purpose TEXT,
+    goal TEXT,
+    context_hash TEXT,
+    result_summary TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    expires_at REAL,
+    hit_count INTEGER DEFAULT 0,
+    last_hit_at REAL,
+    source_task_id TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_async_task_cache_expires ON async_task_cache(expires_at);
 """
 
 FTS_SQL = """
