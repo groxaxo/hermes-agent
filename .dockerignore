@@ -21,7 +21,12 @@ ui-tui/packages/hermes-ink/dist/
 # Environment files
 .env
 
+# Keep the image lean by excluding general Markdown, but explicitly retain
+# runtime/operator documentation referenced by the containerized deployment.
 *.md
+!docker/SOUL.md
+!docs/aait-runtime.md
+!plugins/aait-runtime/README.md
 
 # Runtime data (bind-mounted at /opt/data; must not leak into build context)
 data/
