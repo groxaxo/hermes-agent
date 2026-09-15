@@ -89,8 +89,9 @@ fi
 
 # --- Optional AAIT commercial runtime ---
 # AAIT is intentionally disabled unless AAIT_RUNTIME_ENABLED is explicitly
-# truthy. When enabled, the plugin must be enabled successfully or the
-# container exits rather than silently running without the policy boundary.
+# truthy. When enabled, both config enablement AND an actual plugin
+# import/registration are verified before startup proceeds. This prevents an
+# image/config mismatch from silently launching without the policy boundary.
 #
 # Tenant policy is never copied into the image or generated from secrets.
 # Recommended production deployment mounts it read-only outside /opt/data,
@@ -102,13 +103,42 @@ if _is_truthy "${AAIT_RUNTIME_ENABLED:-0}"; then
 
     echo "AAIT runtime requested; enabling aait-runtime plugin"
     if ! hermes plugins enable aait-runtime >/tmp/aait-plugin-enable.log 2>&1; then
-        echo "ERROR: AAIT runtime was requested but the aait-runtime plugin could not be enabled." >&2
+        echo "ERROR: AAIT runtime was requested but aait-runtime could not be enabled." >&2
         cat /tmp/aait-plugin-enable.log >&2 || true
         rm -f /tmp/aait-plugin-enable.log
         exit 1
     fi
     rm -f /tmp/aait-plugin-enable.log
 
+    # `hermes plugins enable` persists allow-list state and takes effect on the
+    # next process/session. Verify the next-process behavior now rather than
+    # trusting config mutation alone: import the bundled module, execute its
+    # register() path through PluginManager, and require its slash command.
+    if ! python - <<'PY'
+from hermes_cli.plugins import (
+    discover_plugins,
+    get_plugin_command_handler,
+    get_plugin_manager,
+)
+
+discover_plugins(force=True)
+plugins = {p["key"]: p for p in get_plugin_manager().list_plugins()}
+record = plugins.get("aait-runtime")
+if record is None:
+    raise SystemExit("aait-runtime was not discovered")
+if not record.get("enabled"):
+    raise SystemExit(
+        "aait-runtime failed to load: " + str(record.get("error") or "unknown error")
+    )
+if get_plugin_command_handler("aait") is None:
+    raise SystemExit("aait-runtime loaded without registering /aait")
+PY
+    then
+        echo "ERROR: AAIT runtime was requested but the plugin failed discovery/load verification." >&2
+        exit 1
+    fi
+
+    echo "AAIT runtime plugin loaded and registered successfully"
     if [ -r "$AAIT_TENANT_CONFIG" ]; then
         echo "AAIT tenant policy: $AAIT_TENANT_CONFIG"
     else
