@@ -72,10 +72,9 @@ source "${INSTALL_DIR}/.venv/bin/activate"
 # ssh, gh, npm …). Without it those tools write to /root which is
 # ephemeral and shared across profiles. See issue #4426.
 #
-# aait/ is the AAIT-owned persistent control-plane state root. Tenant policy
-# may live there, while approvals and metadata-only audit logs are persisted
-# beneath it independently from the image filesystem.
-mkdir -p "$HERMES_HOME"/{cron,sessions,logs,hooks,memories,skills,skins,plans,workspace,home,aait}
+# AAIT state is deliberately NOT created in stock mode. This preserves the
+# existing container filesystem contract when AAIT_RUNTIME_ENABLED is false.
+mkdir -p "$HERMES_HOME"/{cron,sessions,logs,hooks,memories,skills,skins,plans,workspace,home}
 
 # .env
 if [ ! -f "$HERMES_HOME/.env" ]; then
@@ -89,17 +88,31 @@ fi
 
 # --- Optional AAIT commercial runtime ---
 # AAIT is intentionally disabled unless AAIT_RUNTIME_ENABLED is explicitly
-# truthy. When enabled, both config enablement AND an actual plugin
-# import/registration are verified before startup proceeds. This prevents an
-# image/config mismatch from silently launching without the policy boundary.
+# truthy. When enabled, the entrypoint creates a private state directory,
+# optionally requires the tenant policy mount, enables the plugin, verifies
+# actual discovery/registration, and parses the active policy before Hermes
+# is allowed to start.
 #
 # Tenant policy is never copied into the image or generated from secrets.
-# Recommended production deployment mounts it read-only outside /opt/data,
-# e.g. /run/secrets/aait-tenant.yaml, and sets AAIT_TENANT_CONFIG accordingly.
-# If the configured policy is absent/unreadable, the plugin itself fails closed
-# with its default approval policy.
+# Production deployments should mount it read-only at
+# /run/secrets/aait-tenant.yaml and set AAIT_REQUIRE_TENANT_CONFIG=1.
 if _is_truthy "${AAIT_RUNTIME_ENABLED:-0}"; then
-    export AAIT_TENANT_CONFIG="${AAIT_TENANT_CONFIG:-$HERMES_HOME/aait/tenant.yaml}"
+    AAIT_STATE_DIR="$HERMES_HOME/aait"
+    export AAIT_TENANT_CONFIG="${AAIT_TENANT_CONFIG:-/run/secrets/aait-tenant.yaml}"
+
+    if ! mkdir -p "$AAIT_STATE_DIR" || ! chmod 700 "$AAIT_STATE_DIR"; then
+        echo "ERROR: AAIT runtime could not create a private state directory at $AAIT_STATE_DIR." >&2
+        exit 1
+    fi
+    if [ ! -w "$AAIT_STATE_DIR" ]; then
+        echo "ERROR: AAIT state directory is not writable: $AAIT_STATE_DIR" >&2
+        exit 1
+    fi
+
+    if _is_truthy "${AAIT_REQUIRE_TENANT_CONFIG:-0}" && [ ! -r "$AAIT_TENANT_CONFIG" ]; then
+        echo "ERROR: AAIT tenant policy is required but not readable at $AAIT_TENANT_CONFIG." >&2
+        exit 1
+    fi
 
     echo "AAIT runtime requested; enabling aait-runtime plugin"
     if ! hermes plugins enable aait-runtime >/tmp/aait-plugin-enable.log 2>&1; then
@@ -111,9 +124,10 @@ if _is_truthy "${AAIT_RUNTIME_ENABLED:-0}"; then
     rm -f /tmp/aait-plugin-enable.log
 
     # `hermes plugins enable` persists allow-list state and takes effect on the
-    # next process/session. Verify the next-process behavior now rather than
-    # trusting config mutation alone: import the bundled module, execute its
-    # register() path through PluginManager, and require its slash command.
+    # next process/session. Verify that next-process behavior now rather than
+    # trusting config mutation alone. Calling /aait status also forces policy
+    # parsing and state-store initialization, so malformed/read-protected policy
+    # files fail startup instead of waiting for the first tool call.
     if ! python - <<'PY'
 from hermes_cli.plugins import (
     discover_plugins,
@@ -130,19 +144,23 @@ if not record.get("enabled"):
     raise SystemExit(
         "aait-runtime failed to load: " + str(record.get("error") or "unknown error")
     )
-if get_plugin_command_handler("aait") is None:
+handler = get_plugin_command_handler("aait")
+if handler is None:
     raise SystemExit("aait-runtime loaded without registering /aait")
+status = handler("status")
+if status.startswith("AAIT runtime error:"):
+    raise SystemExit(status)
+print(status)
 PY
     then
-        echo "ERROR: AAIT runtime was requested but the plugin failed discovery/load verification." >&2
+        echo "ERROR: AAIT runtime failed startup validation." >&2
         exit 1
     fi
 
-    echo "AAIT runtime plugin loaded and registered successfully"
     if [ -r "$AAIT_TENANT_CONFIG" ]; then
-        echo "AAIT tenant policy: $AAIT_TENANT_CONFIG"
+        echo "AAIT tenant policy validated: $AAIT_TENANT_CONFIG"
     else
-        echo "WARNING: AAIT tenant policy is not readable at $AAIT_TENANT_CONFIG; policy will fail closed." >&2
+        echo "WARNING: AAIT tenant policy is missing at $AAIT_TENANT_CONFIG; all unmatched actions require approval." >&2
     fi
 fi
 
