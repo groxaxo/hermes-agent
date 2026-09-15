@@ -1,0 +1,100 @@
+# Example AAIT customer policy.
+#
+# Native/local install:
+#   mkdir -p ~/.hermes/aait
+#   cp examples/aait/tenant.yaml ~/.hermes/aait/tenant.yaml
+#
+# Docker production recommendation:
+#   mount a customer-specific copy read-only (for example at
+#   /run/secrets/aait-tenant.yaml) and set AAIT_TENANT_CONFIG to that path.
+#
+# IMPORTANT:
+# - Replace the placeholder tenant_id before any real customer deployment.
+# - Rules are ordered: first match wins.
+# - Unknown actions fall back to approval.
+# - Prefer stable aait.* connector names for commercial integrations.
+# - The provider routes below define the AAIT logical routing contract. This
+#   PR does not yet override Hermes's native model/provider execution path.
+#
+tenant_id: customer-001
+
+policy:
+  # Safe commercial default: unclassified actions require explicit approval.
+  default_mode: approval
+  approval_ttl_seconds: 900
+
+  rules:
+    # Read-only AAIT connectors may run automatically.
+    - match: "aait.gmail.search*"
+      mode: automatic
+      description: "Read/search email metadata and content requested by the user."
+
+    - match: "aait.gmail.get_thread*"
+      mode: automatic
+
+    - match: "aait.calendar.read*"
+      mode: automatic
+
+    - match: "aait.drive.read*"
+      mode: automatic
+
+    # Preparing content is safe; external side effects are approval-gated.
+    - match: "aait.gmail.create_draft*"
+      mode: automatic
+
+    - match: "aait.gmail.send*"
+      mode: approval
+
+    - match: "aait.calendar.create*"
+      mode: approval
+
+    - match: "aait.calendar.reschedule*"
+      mode: approval
+
+    - match: "aait.calendar.cancel*"
+      mode: approval
+
+    - match: "aait.drive.write*"
+      mode: approval
+
+    # Destructive/financial actions are disabled in the base product.
+    - match: "aait.gmail.delete*"
+      mode: forbidden
+
+    - match: "aait.payment.*"
+      mode: forbidden
+
+    - match: "aait.banking.*"
+      mode: forbidden
+
+    # Hermes-native tools can be explicitly allowed case-by-case. Keeping
+    # unknown native tools at the default approval mode is deliberate.
+    - match: "skill_view*"
+      mode: automatic
+
+    - match: "session_search*"
+      mode: automatic
+
+# Logical quality tiers owned by AAIT. Customer workflows should eventually
+# ask for standard/advanced/maximum rather than hard-coding vendor model IDs.
+providers:
+  routes:
+    - tier: standard
+      provider: openai
+      model: gpt-5.6-luna
+      priority: 10
+
+    - tier: standard
+      provider: bedrock
+      model: amazon-nova-lite
+      priority: 20
+
+    - tier: advanced
+      provider: openai
+      model: gpt-5.6-terra
+      priority: 10
+
+    - tier: maximum
+      provider: openai
+      model: gpt-5.6-sol
+      priority: 10

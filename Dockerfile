@@ -2,14 +2,14 @@ FROM ghcr.io/astral-sh/uv:0.11.6-python3.13-trixie@sha256:b3c543b6c4f23a5f2df228
 FROM tianon/gosu:1.19-trixie@sha256:3b176695959c71e123eb390d427efc665eeb561b1540e82679c15e992006b8b9 AS gosu_source
 FROM debian:13.4
 
-# Disable Python stdout buffering to ensure logs are printed immediately
+# Disable Python stdout buffering to ensure logs are printed immediately.
 ENV PYTHONUNBUFFERED=1
 
 # Store Playwright browsers outside the volume mount so the build-time
 # install survives the /opt/data volume overlay at runtime.
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright
 
-# Install system dependencies in one layer, clear APT cache
+# Install system dependencies in one layer, clear APT cache.
 # tini reaps orphaned zombie processes (MCP stdio subprocesses, git, bun, etc.)
 # that would otherwise accumulate when hermes runs as PID 1. See #15012.
 RUN apt-get update && \
@@ -17,7 +17,7 @@ RUN apt-get update && \
     build-essential curl nodejs npm python3 ripgrep ffmpeg gcc python3-dev libffi-dev procps git openssh-client docker-cli tini && \
     rm -rf /var/lib/apt/lists/*
 
-# Non-root user for runtime; UID can be overridden via HERMES_UID at runtime
+# Non-root user for runtime; UID can be overridden via HERMES_UID at runtime.
 RUN useradd -u 10000 -m -d /opt/data hermes
 
 COPY --chmod=0755 --from=gosu_source /gosu /usr/local/bin/
@@ -31,7 +31,7 @@ WORKDIR /opt/hermes
 #
 # ui-tui/packages/hermes-ink/ is copied IN FULL (not just its manifests)
 # because it is referenced as a `file:` workspace dependency from
-# ui-tui/package.json.  Copying the tree up front lets npm resolve the
+# ui-tui/package.json. Copying the tree up front lets npm resolve the
 # workspace to real content instead of stopping at a bare package.json.
 COPY package.json package-lock.json ./
 COPY web/package.json web/package-lock.json web/
@@ -56,7 +56,9 @@ RUN npm install --prefer-offline --no-audit && \
     npm cache clean --force
 
 # ---------- Source code ----------
-# .dockerignore excludes node_modules, so the installs above survive.
+# .dockerignore excludes node_modules, so the installs above survive. The
+# AAIT runtime package, bundled plugin, example tenant policy, operator docs,
+# and docker/SOUL.md are intentionally retained in the build context.
 COPY --chown=hermes:hermes . .
 
 # Build browser dashboard and terminal UI assets.
@@ -82,9 +84,23 @@ RUN uv venv && \
     .venv/bin/python -m ensurepip --upgrade >/dev/null 2>&1 || true && \
     uv pip install --no-cache-dir -e ".[all]"
 
+# Fail the image build if AAIT runtime assets are accidentally omitted by
+# package-discovery or .dockerignore changes. External providers/connectors are
+# intentionally validated at deployment/runtime rather than during image build.
+RUN .venv/bin/python -c "from pathlib import Path; import aait_runtime; required=(Path('/opt/hermes/plugins/aait-runtime/plugin.yaml'), Path('/opt/hermes/plugins/aait-runtime/README.md'), Path('/opt/hermes/examples/aait/tenant.yaml'), Path('/opt/hermes/docs/aait-runtime.md'), Path('/opt/hermes/docker/SOUL.md')); missing=[str(p) for p in required if not p.is_file()]; assert not missing, f'Missing required runtime assets: {missing}'"
+
 # ---------- Runtime ----------
 ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist
 ENV HERMES_HOME=/opt/data
 ENV PATH="/opt/data/.local/bin:${PATH}"
+
+# AAIT is deliberately opt-in so the upstream-compatible Hermes image keeps
+# stock behavior by default. The production policy path follows Docker/Swarm
+# secret-mount conventions; managed customer deployments should also set
+# AAIT_REQUIRE_TENANT_CONFIG=1 so a missing policy aborts startup.
+ENV AAIT_RUNTIME_ENABLED=0
+ENV AAIT_REQUIRE_TENANT_CONFIG=0
+ENV AAIT_TENANT_CONFIG=/run/secrets/aait-tenant.yaml
+
 VOLUME [ "/opt/data" ]
 ENTRYPOINT [ "/usr/bin/tini", "-g", "--", "/opt/hermes/docker/entrypoint.sh" ]
