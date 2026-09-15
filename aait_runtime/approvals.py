@@ -2,12 +2,20 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import secrets
 import sqlite3
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
+
+
+def _restrict_mode(path: Path, mode: int) -> None:
+    """Apply private POSIX permissions without breaking non-POSIX installs."""
+
+    if os.name == "posix":
+        path.chmod(mode)
 
 
 def action_digest(tenant_id: str, tool_name: str, args: Mapping[str, Any] | None) -> str:
@@ -40,17 +48,25 @@ class ApprovalRecord:
 class ApprovalStore:
     """SQLite-backed exact-action, single-use approvals.
 
-    Only the SHA-256 digest and argument *keys* are persisted.  Email bodies,
+    Only the SHA-256 digest and argument *keys* are persisted. Email bodies,
     contact data, calendar descriptions and other argument values are never
     stored in the approval database.
+
+    On POSIX systems the state directory is restricted to ``0700`` and the
+    database to ``0600``. This provides defense in depth for bind-mounted
+    customer state even when the host/container default umask is permissive.
     """
 
     def __init__(self, path: str | Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        _restrict_mode(self.path.parent, 0o700)
         self._init_db()
+        _restrict_mode(self.path, 0o600)
 
     def _connect(self) -> sqlite3.Connection:
+        if self.path.exists():
+            _restrict_mode(self.path, 0o600)
         conn = sqlite3.connect(str(self.path), timeout=5.0)
         conn.row_factory = sqlite3.Row
         return conn
