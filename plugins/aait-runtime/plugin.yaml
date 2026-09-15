@@ -1,0 +1,8 @@
+name: aait-runtime
+version: 0.1.0
+description: "Auckland Automate IT commercial runtime boundary: tenant policy, exact-action approvals and privacy-safe audit logging."
+author: "Auckland Automate IT"
+kind: standalone
+hooks:
+  - pre_tool_call
+  - post_tool_call

@@ -1,0 +1,85 @@
+# Example AAIT customer policy.
+# Copy to ~/.hermes/aait/tenant.yaml after enabling the aait-runtime plugin.
+#
+# Rules are ordered: first match wins. Unknown actions fall back to approval.
+# Prefer stable aait.* connector names for commercial integrations.
+
+tenant_id: customer-001
+
+policy:
+  default_mode: approval
+  approval_ttl_seconds: 900
+
+  rules:
+    # Read-only AAIT connectors may run automatically.
+    - match: "aait.gmail.search*"
+      mode: automatic
+      description: "Read/search email metadata and content requested by the user."
+
+    - match: "aait.gmail.get_thread*"
+      mode: automatic
+
+    - match: "aait.calendar.read*"
+      mode: automatic
+
+    - match: "aait.drive.read*"
+      mode: automatic
+
+    # Preparing content is safe; external side effects are approval-gated.
+    - match: "aait.gmail.create_draft*"
+      mode: automatic
+
+    - match: "aait.gmail.send*"
+      mode: approval
+
+    - match: "aait.calendar.create*"
+      mode: approval
+
+    - match: "aait.calendar.reschedule*"
+      mode: approval
+
+    - match: "aait.calendar.cancel*"
+      mode: approval
+
+    - match: "aait.drive.write*"
+      mode: approval
+
+    # Destructive/financial actions are disabled in the base product.
+    - match: "aait.gmail.delete*"
+      mode: forbidden
+
+    - match: "aait.payment.*"
+      mode: forbidden
+
+    - match: "aait.banking.*"
+      mode: forbidden
+
+    # Hermes-native tools can be explicitly allowed case-by-case. Keeping
+    # unknown native tools at the default approval mode is deliberate.
+    - match: "skill_view*"
+      mode: automatic
+
+    - match: "session_search*"
+      mode: automatic
+
+providers:
+  routes:
+    - tier: standard
+      provider: openai
+      model: gpt-5.6-luna
+      priority: 10
+
+    - tier: standard
+      provider: bedrock
+      model: amazon-nova-lite
+      priority: 20
+
+    - tier: advanced
+      provider: openai
+      model: gpt-5.6-terra
+      priority: 10
+
+    - tier: maximum
+      provider: openai
+      model: gpt-5.6-sol
+      priority: 10
