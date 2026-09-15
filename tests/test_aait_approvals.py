@@ -1,3 +1,6 @@
+import os
+import stat
+
 from aait_runtime.approvals import ApprovalStore, action_digest
 
 
@@ -75,3 +78,14 @@ def test_approval_is_session_scoped(tmp_path):
         )
         is None
     )
+
+
+def test_approval_store_uses_private_posix_permissions(tmp_path):
+    if os.name != "posix":
+        return
+
+    state_dir = tmp_path / "aait"
+    store = ApprovalStore(state_dir / "approvals.sqlite3")
+
+    assert stat.S_IMODE(state_dir.stat().st_mode) == 0o700
+    assert stat.S_IMODE(store.path.stat().st_mode) == 0o600
