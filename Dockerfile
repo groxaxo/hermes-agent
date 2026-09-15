@@ -56,9 +56,9 @@ RUN npm install --prefer-offline --no-audit && \
     npm cache clean --force
 
 # ---------- Source code ----------
-# .dockerignore excludes node_modules, so the installs above survive.  The
-# AAIT runtime package, bundled aait-runtime plugin, example tenant policy,
-# operator documentation, and docker/SOUL.md are intentionally included.
+# .dockerignore excludes node_modules, so the installs above survive. The
+# AAIT runtime package, bundled plugin, example tenant policy, operator docs,
+# and docker/SOUL.md are intentionally retained in the build context.
 COPY --chown=hermes:hermes . .
 
 # Build browser dashboard and terminal UI assets.
@@ -84,10 +84,10 @@ RUN uv venv && \
     .venv/bin/python -m ensurepip --upgrade >/dev/null 2>&1 || true && \
     uv pip install --no-cache-dir -e ".[all]"
 
-# Fail the image build if the commercial runtime package or its bundled plugin
-# was accidentally omitted by packaging/.dockerignore changes.  This is a
-# static build-time gate; external provider/connectors are validated at deploy.
-RUN .venv/bin/python -c "from pathlib import Path; import aait_runtime; required=(Path('/opt/hermes/plugins/aait-runtime/plugin.yaml'), Path('/opt/hermes/examples/aait/tenant.yaml'), Path('/opt/hermes/docs/aait-runtime.md')); missing=[str(p) for p in required if not p.is_file()]; assert not missing, f'Missing AAIT runtime assets: {missing}'"
+# Fail the image build if AAIT runtime assets are accidentally omitted by
+# package-discovery or .dockerignore changes. External providers/connectors are
+# intentionally validated at deployment/runtime rather than during image build.
+RUN .venv/bin/python -c "from pathlib import Path; import aait_runtime; required=(Path('/opt/hermes/plugins/aait-runtime/plugin.yaml'), Path('/opt/hermes/plugins/aait-runtime/README.md'), Path('/opt/hermes/examples/aait/tenant.yaml'), Path('/opt/hermes/docs/aait-runtime.md'), Path('/opt/hermes/docker/SOUL.md')); missing=[str(p) for p in required if not p.is_file()]; assert not missing, f'Missing required runtime assets: {missing}'"
 
 # ---------- Runtime ----------
 ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist
@@ -95,10 +95,12 @@ ENV HERMES_HOME=/opt/data
 ENV PATH="/opt/data/.local/bin:${PATH}"
 
 # AAIT is deliberately opt-in so the upstream-compatible Hermes image keeps
-# its existing behavior by default.  When enabled by the entrypoint, tenant
-# policy remains external to the image and missing policy fails closed.
+# stock behavior by default. The production policy path follows Docker/Swarm
+# secret-mount conventions; managed customer deployments should also set
+# AAIT_REQUIRE_TENANT_CONFIG=1 so a missing policy aborts startup.
 ENV AAIT_RUNTIME_ENABLED=0
-ENV AAIT_TENANT_CONFIG=/opt/data/aait/tenant.yaml
+ENV AAIT_REQUIRE_TENANT_CONFIG=0
+ENV AAIT_TENANT_CONFIG=/run/secrets/aait-tenant.yaml
 
 VOLUME [ "/opt/data" ]
 ENTRYPOINT [ "/usr/bin/tini", "-g", "--", "/opt/hermes/docker/entrypoint.sh" ]
