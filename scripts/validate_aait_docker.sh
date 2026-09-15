@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
 # Build and validate the AAIT commercial runtime using Docker only.
-#
-# This gate intentionally performs no external model/provider calls. Runtime
-# checks use --network none so packaging/activation/policy tests cannot reach
-# external services even if future code accidentally attempts to do so.
+# Runtime checks use --network none and do not call external model/provider APIs.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -16,9 +13,7 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 
 TMP_ROOT="$(mktemp -d)"
-cleanup() {
-    rm -rf "$TMP_ROOT"
-}
+cleanup() { rm -rf "$TMP_ROOT"; }
 trap cleanup EXIT
 
 mkdir -p "$TMP_ROOT/off-data" "$TMP_ROOT/on-data"
@@ -80,8 +75,8 @@ assert "Default mode: approval" in status, status
 state = pathlib.Path("/opt/data/aait")
 db = state / "approvals.sqlite3"
 assert db.is_file()
-assert stat.S_IMODE(state.stat().st_mode) == 0o700, oct(stat.S_IMODE(state.stat().st_mode))
-assert stat.S_IMODE(db.stat().st_mode) == 0o600, oct(stat.S_IMODE(db.stat().st_mode))
+assert stat.S_IMODE(state.stat().st_mode) == 0o700
+assert stat.S_IMODE(db.stat().st_mode) == 0o600
 print(status)
 '
 
@@ -109,7 +104,7 @@ if docker run --rm --network none \
     -e AAIT_REQUIRE_TENANT_CONFIG=1 \
     -e AAIT_TENANT_CONFIG=/run/secrets/does-not-exist.yaml \
     "$IMAGE" \
-    python -c 'raise SystemExit("entrypoint should have blocked startup")'; then
+    true; then
     echo "ERROR: strict AAIT startup unexpectedly accepted a missing tenant policy." >&2
     exit 1
 fi
@@ -120,7 +115,7 @@ if docker run --rm --network none \
     -e AAIT_REQUIRE_TENANT_CONFIG=1 \
     -v "$TMP_ROOT/invalid-tenant.yaml:/run/secrets/aait-tenant.yaml:ro" \
     "$IMAGE" \
-    python -c 'raise SystemExit("entrypoint should have rejected malformed policy")'; then
+    true; then
     echo "ERROR: AAIT startup unexpectedly accepted a malformed tenant policy." >&2
     exit 1
 fi
