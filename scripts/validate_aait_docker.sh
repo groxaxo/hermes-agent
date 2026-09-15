@@ -18,7 +18,9 @@ trap cleanup EXIT
 
 mkdir -p "$TMP_ROOT/off-data" "$TMP_ROOT/on-data"
 cp "$REPO_ROOT/examples/aait/tenant.yaml" "$TMP_ROOT/tenant.yaml"
-printf 'policy: [this, is, invalid-for-aait]\n' > "$TMP_ROOT/invalid-tenant.yaml"
+# Intentionally syntactically invalid YAML: startup validation must reject it
+# before the requested container payload is ever executed.
+printf 'tenant_id: [unterminated\n' > "$TMP_ROOT/invalid-tenant.yaml"
 
 printf '\n==> Building %s\n' "$IMAGE"
 docker build --pull -t "$IMAGE" "$REPO_ROOT"
