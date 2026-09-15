@@ -9,20 +9,24 @@ remain manageable.
 
 ## What this plugin enforces now
 
-- per-tenant ordered tool policy: `automatic`, `approval`, `forbidden`;
-- fail-closed default when enabled without a valid tenant policy;
+- ordered per-tenant tool policy: `automatic`, `approval`, `forbidden`;
+- approval-gated safe default when no tenant policy is available;
 - exact-action SHA-256 approvals tied to tenant + session + tool + arguments;
 - single-use approval consumption with expiry;
 - SQLite approval state that survives process/container restarts;
 - metadata-only JSONL audit logs;
-- argument values and tool result bodies are omitted from AAIT audit storage;
+- argument values and tool result bodies omitted from AAIT audit storage;
 - `/aait status`, `approvals`, `approve`, `reject`, and `reload` commands.
+
+The Docker integration adds a stricter managed-production option: set
+`AAIT_REQUIRE_TENANT_CONFIG=1` and container startup fails if the tenant policy
+is missing, unreadable, or malformed.
 
 ## What this plugin does not claim yet
 
 This PR establishes the commercial policy/approval boundary and stable connector
-contracts. It does **not** yet implement the production Gmail, Calendar, Drive,
-or MissedCallZero AAIT connectors. Those are follow-up modules that should use
+contracts. It does **not** yet implement production Gmail, Calendar, Drive, or
+MissedCallZero AAIT connectors. Those are follow-up modules that should expose
 stable `aait.*` action names.
 
 ---
@@ -42,7 +46,7 @@ mkdir -p ~/.hermes/aait
 cp examples/aait/tenant.yaml ~/.hermes/aait/tenant.yaml
 ```
 
-Alternatively point the plugin at a different YAML file:
+Or point the plugin at another YAML file:
 
 ```bash
 export AAIT_TENANT_CONFIG=/secure/path/tenant.yaml
@@ -55,7 +59,7 @@ reloaded in-session with:
 /aait reload
 ```
 
-Check the active state:
+Check active state with:
 
 ```text
 /aait status
@@ -65,28 +69,25 @@ Check the active state:
 
 ## Docker enablement
 
-The repository Docker image contains the AAIT Python package and bundled
-plugin, but AAIT enforcement remains **disabled by default** to preserve normal
-Hermes behavior.
+The repository image contains the AAIT Python package and bundled plugin, but
+AAIT remains **disabled by default**. With AAIT off, the entrypoint does not
+create `/opt/data/aait` and does not enable the plugin.
 
-Enable it explicitly:
-
-```bash
--e AAIT_RUNTIME_ENABLED=1
-```
-
-The default container policy path is:
-
-```text
-/opt/data/aait/tenant.yaml
-```
-
-For production, prefer a read-only external policy mount:
+For a managed customer deployment use:
 
 ```bash
--e AAIT_TENANT_CONFIG=/run/secrets/aait-tenant.yaml \
+-e AAIT_RUNTIME_ENABLED=1 \
+-e AAIT_REQUIRE_TENANT_CONFIG=1 \
 -v /srv/aait/customer-001/policy/tenant.yaml:/run/secrets/aait-tenant.yaml:ro
 ```
+
+The Dockerfile default policy path is already:
+
+```text
+/run/secrets/aait-tenant.yaml
+```
+
+so `AAIT_TENANT_CONFIG` only needs to be set when using a different path.
 
 Example local smoke run:
 
@@ -98,22 +99,25 @@ cp examples/aait/tenant.yaml runtime-smoke/tenant.yaml
 
 docker run --rm -it \
   -e AAIT_RUNTIME_ENABLED=1 \
-  -e AAIT_TENANT_CONFIG=/run/secrets/aait-tenant.yaml \
+  -e AAIT_REQUIRE_TENANT_CONFIG=1 \
   -v "$(pwd)/runtime-smoke/data:/opt/data" \
   -v "$(pwd)/runtime-smoke/tenant.yaml:/run/secrets/aait-tenant.yaml:ro" \
   aait-hermes:dev \
   bash
 ```
 
-When `AAIT_RUNTIME_ENABLED=1`, the entrypoint enables `aait-runtime`
-idempotently. If plugin activation itself fails, container startup fails rather
-than silently proceeding without the commercial policy layer.
+When AAIT is enabled, the entrypoint:
 
-If the tenant policy path is missing or unreadable, startup warns and the
-plugin falls back to its **fail-closed approval default**. A managed customer
-deployment should still treat that warning as a provisioning failure.
+1. creates `/opt/data/aait` and restricts it to `0700`;
+2. optionally requires the tenant-policy mount;
+3. enables `aait-runtime` idempotently;
+4. verifies real plugin discovery/load, not just config mutation;
+5. requires `/aait` registration;
+6. forces policy parsing during startup;
+7. exits if plugin activation or policy validation fails.
 
-AAIT mutable state is persisted under the normal `HERMES_HOME` volume:
+The approval database is restricted to `0600` on POSIX systems. Mutable AAIT
+state remains on the normal `HERMES_HOME` volume:
 
 ```text
 /opt/data/aait/
@@ -122,16 +126,21 @@ AAIT mutable state is persisted under the normal `HERMES_HOME` volume:
     └── YYYY-MM-DD.jsonl
 ```
 
-Tenant policy may also live there for simple installations, but an external
-read-only mount gives a cleaner production separation between operator policy
-and mutable runtime state.
+### Missing-policy behavior
+
+For development/recovery, `AAIT_REQUIRE_TENANT_CONFIG=0` allows startup without
+a policy, but unmatched actions remain approval-gated.
+
+For managed production, use `AAIT_REQUIRE_TENANT_CONFIG=1`; a missing or
+unreadable policy aborts startup. A present but malformed policy also aborts
+startup because the entrypoint validates `/aait status` before Hermes starts.
 
 ---
 
 ## Approval flow
 
-When an action matches an `approval` rule, Hermes receives a blocking tool
-result similar to:
+When an action matches an `approval` rule, Hermes receives a blocking result
+similar to:
 
 ```text
 AAIT approval required for 'aait.gmail.send'.
@@ -161,7 +170,7 @@ The approval database stores:
 - exact-action digest;
 - approval status/timestamps.
 
-It does not persist the argument values themselves.
+It does not persist argument values themselves.
 
 ---
 
@@ -183,25 +192,26 @@ aait.drive.write
 aait.missedcallzero.lead.create
 ```
 
-This keeps customer policy independent of Hermes internals and of the concrete
+This keeps customer policy independent of Hermes internals and the concrete
 API/MCP implementation behind each connector.
 
 ---
 
 ## Required validation before customer rollout
 
-Run at minimum:
+Use the repository's reproducible Docker gate:
 
 ```bash
-pytest -q \
-  tests/test_aait_policy.py \
-  tests/test_aait_approvals.py \
-  tests/test_aait_runtime.py
-
-docker build --pull -t aait-hermes:pr-test .
+./scripts/validate_aait_docker.sh
 ```
 
-Then verify one real tool call from each policy class:
+It builds the image and performs its runtime checks with `--network none`, so it
+cannot call external model/provider APIs. It verifies stock AAIT-off behavior,
+plugin activation, default secret-path resolution, strict missing-policy
+failure, malformed-policy failure, state permissions, and the targeted Python
+regression suite.
+
+After that passes, verify one real end-to-end tool call from each policy class:
 
 1. `automatic` executes without approval;
 2. `approval` returns an ID and executes only after exact-action approval;
@@ -209,8 +219,7 @@ Then verify one real tool call from each policy class:
 4. a consumed approval cannot be replayed;
 5. `forbidden` never dispatches;
 6. restart preserves approval/audit state;
-7. audit logs do not contain argument values;
-8. non-AAIT Docker usage remains unchanged when `AAIT_RUNTIME_ENABLED=0`.
+7. audit logs do not contain argument values.
 
-For the full architecture, Docker production guidance, upgrade/rollback policy,
-and adversarial rollout gates, see `docs/aait-runtime.md`.
+For architecture, Docker production posture, rollout gates, and rollback policy,
+see `docs/aait-runtime.md`.
