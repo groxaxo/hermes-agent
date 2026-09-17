@@ -1915,6 +1915,79 @@ def _restart_slash_worker(sid: str, session: dict):
     _attach_worker(sid, session, new_worker)
 
 
+# ── Z.AI GLM Coding Plan remaining quota (status-bar parity with the omp extension) ──────────
+# GET /api/monitor/usage/quota/limit on the coding-plan key: TOKENS_LIMIT unit:3 = 5h window,
+# unit:6 = weekly, ``percentage`` = used-%. TTL-cached module state because the 1s usage
+# ticker calls _get_usage on every tick — the endpoint must be hit at most once per TTL.
+# Omitted (self-hiding segment) when no key resolves or the fetch fails; a failure keeps
+# serving the last good payload so the readout degrades stale-but-honest instead of vanishing.
+ZAI_QUOTA_TTL_S = env_float("HERMES_ZAI_QUOTA_TTL_S", 300.0)
+_zai_quota_cache: dict = {"at": 0.0, "payload": None}
+_zai_quota_key: str | None = None
+
+
+def _resolve_zai_key() -> str:
+    """Coding-plan key: the env vars hermes already honours for the zai provider, else omp's store."""
+    global _zai_quota_key
+    if _zai_quota_key:
+        return _zai_quota_key
+    for _var in ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"):
+        if os.environ.get(_var, "").strip():
+            _zai_quota_key = os.environ[_var].strip()
+            return _zai_quota_key
+    with contextlib.suppress(Exception):
+        _out = subprocess.run(["omp", "token", "zai"], capture_output=True, text=True, timeout=15)
+        _first = (_out.stdout or "").strip().splitlines()[0].strip() if _out.returncode == 0 else ""
+        if _first:
+            _zai_quota_key = _first
+    return _zai_quota_key or ""
+
+
+def _zai_quota_cached() -> dict | None:
+    now = time.monotonic()
+    if _zai_quota_cache["payload"] is not None and now - _zai_quota_cache["at"] < ZAI_QUOTA_TTL_S:
+        return _zai_quota_cache["payload"]
+    key = _resolve_zai_key()
+    payload = None
+    if key:
+        with contextlib.suppress(Exception):  # a status-bar readout must never break usage reporting
+            import urllib.request
+            _req = urllib.request.Request(
+                "https://api.z.ai/api/monitor/usage/quota/limit",
+                headers={"Authorization": f"Bearer {key}", "Accept": "application/json"})
+            with urllib.request.urlopen(_req, timeout=6) as _resp:
+                _limits = (json.loads(_resp.read().decode("utf-8")) or {}).get("data", {}).get("limits", [])
+            _five = next((l for l in _limits if l.get("type") == "TOKENS_LIMIT" and l.get("unit") == 3), None)
+            _week = next((l for l in _limits if l.get("type") == "TOKENS_LIMIT" and l.get("unit") == 6), None)
+            _parts: list[str] = []
+            if _five is not None:
+                _p5 = int(_five.get("percentage") or 0)
+                _parts.append(f"5h {100 - _p5}%")
+                payload = payload or {}
+                payload["zai_quota_5h_pct"] = _p5
+            if _week is not None:
+                _pw = int(_week.get("percentage") or 0)
+                _reset_ms = _week.get("nextResetTime")
+                _reset = ""
+                if isinstance(_reset_ms, int) and _reset_ms > time.time() * 1000:
+                    _mins = max(0, round((_reset_ms - time.time() * 1000) / 60000))
+                    _d, _h = _mins // 1440, (_mins % 1440) // 60
+                    _reset = f" ({_d}d{_h}h)" if _d else f" ({_h}h{_mins % 60}m)"
+                _parts.append(f"7d {100 - _pw}%{_reset}")
+                payload = payload or {}
+                payload["zai_quota_week_pct"] = _pw
+            if _parts:
+                payload = dict(payload or {})
+                payload["zai_quota"] = "GLM " + " · ".join(_parts)
+            else:
+                payload = None
+    if payload is not None:
+        _zai_quota_cache.update(at=now, payload=payload)
+    else:
+        _zai_quota_cache["at"] = now  # negative-result backoff: retry at most once per TTL
+    return _zai_quota_cache["payload"]
+
+
 def _get_usage(agent) -> dict:
     g = lambda k, fb=None: getattr(agent, k, 0) or (getattr(agent, fb, 0) if fb else 0)
     usage = {
@@ -1950,10 +2023,14 @@ def _get_usage(agent) -> dict:
             for _key, _val in (("avg_latency_s", _total_lat / _n), ("avg_tps", _avg_vel)):
                 if _val is not None and _val == _val and 0 < _val < 1e6:  # guard NaN/negative/absurd provider timings
                     usage[_key] = round(float(_val), 1)
+    # Z.AI GLM Coding Plan remaining quota — TTL-cached module state (see _zai_quota_cached).
+    with contextlib.suppress(Exception):
+        _quota = _zai_quota_cached()
+        if _quota:
+            usage.update(_quota)
     # Live count of background/async subagents (CLI status bar ⛓ parity, same async_delegation registry).
     with contextlib.suppress(Exception):
         from tools.async_delegation import active_count as _async_active_count
-        usage["active_subagents"] = _async_active_count()
     # Dev-only live credits-spent readout, gated on HERMES_DEV_CREDITS so the payload stays clean otherwise.
     if is_truthy_value(os.environ.get("HERMES_DEV_CREDITS")):
         with contextlib.suppress(Exception):

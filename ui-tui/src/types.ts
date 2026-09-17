@@ -231,6 +231,12 @@ export interface Usage {
   output: number
   reasoning?: number
   total: number
+  /** Z.AI GLM Coding Plan remaining quota, preformatted ("GLM 5h 99% · 7d 99% (6d23h)"). */
+  zai_quota?: string
+  /** Z.AI quota used-% in the 5h window — colour coding only. */
+  zai_quota_5h_pct?: number
+  /** Z.AI quota used-% in the weekly window — colour coding only. */
+  zai_quota_week_pct?: number
 }
 
 export interface SudoReq {

@@ -567,3 +567,43 @@ describe('StatusRule perf read-outs (cache hit / latency / tps)', () => {
     expect(textContent(element)).not.toContain('weekly-digest')
   })
 })
+
+describe('StatusRule zai_quota segment', () => {
+  const quotaUsage = {
+    ...baseProps.usage,
+    zai_quota: 'GLM 5h 99% · 7d 99% (6d23h)',
+    zai_quota_5h_pct: 1,
+    zai_quota_week_pct: 1
+  }
+
+  it('renders the preformatted quota text at a wide terminal', () => {
+    const rendered = textContent(StatusRule({ ...baseProps, cols: 160, usage: quotaUsage }))
+
+    expect(rendered).toContain('GLM 5h 99% · 7d 99% (6d23h)')
+  })
+
+  it('self-hides when the server omits the key', () => {
+    const rendered = textContent(StatusRule({ ...baseProps, cols: 160 }))
+
+    expect(rendered).not.toContain('GLM ')
+  })
+
+  it('self-hides below the zaiQuota width breakpoint', () => {
+    const rendered = textContent(StatusRule({ ...baseProps, cols: 96, usage: quotaUsage }))
+
+    expect(rendered).not.toContain('GLM ')
+  })
+
+  it('honors the display.status_bar.fields visibility filter', () => {
+    const rendered = textContent(
+      StatusRule({
+        ...baseProps,
+        cols: 160,
+        statusBarFields: new Set(['model', 'context_pct']),
+        usage: quotaUsage
+      })
+    )
+
+    expect(rendered).not.toContain('GLM ')
+  })
+})

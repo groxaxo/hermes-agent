@@ -71,16 +71,18 @@ describe('statusBarSegments', () => {
       bg: true,
       subagents: true,
       cacheHit: true,
+      zaiQuota: true,
       latency: true,
       tps: true
     } satisfies StatusBarSegments)
   })
 
-  it('sheds cache/latency/tps read-outs first as the terminal narrows', () => {
-    // 96/104/110-col breakpoints: these are the lowest-priority perf
-    // read-outs, so they disappear before any pre-existing segment.
-    expect(statusBarSegments(108)).toMatchObject({ cacheHit: true, latency: true, tps: false })
-    expect(statusBarSegments(100)).toMatchObject({ cacheHit: true, latency: false, tps: false })
+  it('sheds cache/quota/latency/tps read-outs first as the terminal narrows', () => {
+    // 96/100/104/110-col breakpoints: these are the lowest-priority perf and
+    // quota read-outs, so they disappear before any pre-existing segment.
+    expect(statusBarSegments(108)).toMatchObject({ cacheHit: true, zaiQuota: true, latency: true, tps: false })
+    expect(statusBarSegments(102)).toMatchObject({ cacheHit: true, zaiQuota: true, latency: false, tps: false })
+    expect(statusBarSegments(98)).toMatchObject({ cacheHit: true, zaiQuota: false, latency: false, tps: false })
     expect(statusBarSegments(94)).toMatchObject({ cacheHit: false, latency: false, tps: false, subagents: true })
   })
 

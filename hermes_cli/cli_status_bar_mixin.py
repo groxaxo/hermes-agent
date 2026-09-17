@@ -954,10 +954,10 @@ class CLIStatusBarMixin:
         """Visible status-bar fields from ``display.status_bar.fields`` (module-level
         ``CLI_CONFIG``; no per-render YAML parse). ``None`` = not customized, show everything.
 
-        Fields: model, context_detail, context_pct, cache_hit, latency, tps, compressions,
-        bg_tasks, bg_processes, bg_subagents, goal, duration, prompt_elapsed, idle_since,
-        focus, yolo, stash, battery, title, total_tokens (opt-in only). Order is fixed; the
-        config controls visibility only.
+        Fields: model, context_detail, context_pct, cache_hit, zai_quota (TUI-only), latency, tps,
+        compressions, bg_tasks, bg_processes, bg_subagents, goal, duration, prompt_elapsed,
+        idle_since, focus, yolo, stash, battery, title, total_tokens (opt-in only). Order is
+        fixed; the config controls visibility only.
         """
         from cli import CLI_CONFIG
         if hasattr(self, "_status_bar_field_set_cache"):

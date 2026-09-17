@@ -313,6 +313,7 @@ export interface StatusBarSegments {
   subagents: boolean
   tps: boolean
   voice: boolean
+  zaiQuota: boolean
 }
 
 export function statusBarSegments(cols: number): StatusBarSegments {
@@ -327,6 +328,7 @@ export function statusBarSegments(cols: number): StatusBarSegments {
     bg: w >= 88,
     subagents: w >= 92,
     cacheHit: w >= 96,
+    zaiQuota: w >= 100,
     latency: w >= 104,
     tps: w >= 110
   }
@@ -621,6 +623,12 @@ export function StatusRule({
   // cache reads, Codex app-server with no latency), so these self-hide.
   const cacheHitText = typeof usage.cache_hit_pct === 'number' ? `◎ ${usage.cache_hit_pct}%` : ''
   const showCacheHit = segs.cacheHit && ok('cache_hit') && !!cacheHitText && fits(SEP + stringWidth(cacheHitText))
+  // Z.AI GLM Coding Plan remaining quota (omp status-line parity). The server omits
+  // zai_quota when no key resolves or the endpoint fails, so this self-hides like
+  // cache_hit/tps. Colour escalates as the 5h window drains.
+  const zaiQuotaText = usage.zai_quota ?? ''
+  const zai5hLeft = 100 - (usage.zai_quota_5h_pct ?? 0)
+  const showZaiQuota = segs.zaiQuota && ok('zai_quota') && !!zaiQuotaText && fits(SEP + stringWidth(zaiQuotaText))
   const latencyText = typeof usage.avg_latency_s === 'number' ? `◷ ${usage.avg_latency_s.toFixed(1)}s` : ''
   const showLatency = segs.latency && ok('latency') && !!latencyText && fits(SEP + stringWidth(latencyText))
   const tpsText = typeof usage.avg_tps === 'number' ? `↑ ${Math.round(usage.avg_tps)} t/s` : ''
@@ -768,6 +776,14 @@ export function StatusRule({
               }
             >
               {cacheHitText}
+            </Text>
+          </Text>
+        ) : null}
+        {showZaiQuota ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' │ '}
+            <Text color={zai5hLeft < 20 ? t.color.error : zai5hLeft < 50 ? t.color.warn : t.color.muted}>
+              {zaiQuotaText}
             </Text>
           </Text>
         ) : null}
