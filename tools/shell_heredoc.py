@@ -10,6 +10,7 @@ Masked bodies keep their newline count (re.MULTILINE)."""
 from __future__ import annotations
 
 import re
+from typing import Callable
 
 # Non-shell interpreters whose quoted heredoc bodies are data for THAT interpreter; optional
 # VAR=... assignments, ``env`` and a path prefix allowed. Narrow on purpose: unmatched = visible.
@@ -159,8 +160,14 @@ def _find_heredoc_close(
         cursor = after
 
 
-def strip_inert_heredoc_bodies(command: str) -> str:
-    """Mask heredoc bodies that are provably inert data (see module docstring)."""
+def strip_inert_heredoc_bodies(
+    command: str, *, safe_body: Callable[[str, str], bool] | None = None,
+) -> str:
+    """Mask quoted heredocs; a caller can additionally require proof about interpreter code.
+
+    ``safe_body`` sees the opener and body (without terminator). When it declines, keep the
+    original source visible to downstream scanners rather than suppressing references.
+    """
     # Runs on every terminal call: skip the state machine when no '<<' exists; stop past the last.
     if "<<" not in command:
         return command
@@ -190,7 +197,13 @@ def strip_inert_heredoc_bodies(command: str) -> str:
         if all(quoted for _delimiter, _strip_tabs, quoted in specs) and not has_list_operator:
             masked_opener = _mask_simple_quotes(command[command_start:command_end])
             if (not any(m in masked_opener for m in ("$(", "`", "<(", ">("))
-                    and _INERT_HEREDOC_CONSUMER_RE.search(masked_opener)):
+                    and _INERT_HEREDOC_CONSUMER_RE.search(masked_opener)
+                    and (safe_body is None or all(
+                        safe_body(
+                            command[command_start:command_end],
+                            command[start:command.rfind("\n", start, end - 1) + 1],
+                        ) for start, end in body_ranges
+                    ))):
                 ranges.extend(body_ranges)
         command_start = body_cursor
     # Single-pass rebuild (ranges are sorted and non-overlapping), bodies -> their newlines only.

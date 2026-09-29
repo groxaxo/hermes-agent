@@ -9,6 +9,7 @@ anchored on concrete command identifiers — so they cannot fire on prose. Defen
 
 from __future__ import annotations
 
+import ast
 import logging
 import os
 import re
@@ -731,11 +732,82 @@ def _references_at(segment: list[str], index: int, cwd: Optional[str]) -> Iterat
         yield from _resolved_or_nothing(executable, cwd)
 
 
+def _readonly_python_log_body(opener: str, body: str) -> bool:
+    """Only suppress references in a closed, side-effect-free Path.read_text inspection.
+
+    Unknown syntax/calls/imports and rebinding of Path or builtins keep the original scan.
+    This is intentionally not a general Python interpreter or data-flow analyzer.
+    """
+    if not re.fullmatch(r"\s*python(?:3(?:\.\d+)*)?\s+-\s+<<\s*'([A-Za-z_][A-Za-z_0-9]*)'\s*", opener):
+        return False
+    try:
+        statements = ast.parse(body).body
+    except (SyntaxError, ValueError):
+        return False
+    if not statements or not isinstance(statements[0], ast.ImportFrom) or not (
+        statements[0].module == "pathlib" and statements[0].level == 0
+        and len(statements[0].names) == 1
+        and statements[0].names[0].name == "Path"
+        and statements[0].names[0].asname is None
+    ):
+        return False
+    values: dict[str, str] = {}
+
+    def kind(node: ast.AST) -> str | None:
+        if isinstance(node, ast.Constant) and type(node.value) is str:
+            return "str"
+        if isinstance(node, ast.Name):
+            return values.get(node.id)
+        if not isinstance(node, ast.Call):
+            return None
+        if node.keywords and not (
+            isinstance(node.func, ast.Attribute) and node.func.attr == "read_text"
+            and all(kw.arg in {"encoding", "errors"} and kind(kw.value) == "str"
+                    for kw in node.keywords)
+            and len({kw.arg for kw in node.keywords}) == len(node.keywords)
+        ):
+            return None
+        if isinstance(node.func, ast.Name):
+            if node.func.id == "Path" and len(node.args) == 1 and kind(node.args[0]) == "str" and not node.keywords:
+                return "path"
+            if node.func.id == "len" and len(node.args) == 1 and kind(node.args[0]) == "lines" and not node.keywords:
+                return "number"
+        if isinstance(node.func, ast.Attribute):
+            if node.func.attr == "read_text" and not node.args and kind(node.func.value) == "path":
+                return "text"
+            if node.func.attr == "splitlines" and not node.args and not node.keywords and kind(node.func.value) == "text":
+                return "lines"
+        return None
+
+    for statement in statements[1:]:
+        if isinstance(statement, ast.Assign) and len(statement.targets) == 1 and isinstance(statement.targets[0], ast.Name):
+            name = statement.targets[0].id
+            if name in values or name in {"Path", "len", "print"}:
+                return False
+            value_kind = kind(statement.value)
+            if value_kind not in {"path", "text", "lines", "number", "str"}:
+                return False
+            values[name] = value_kind
+        elif isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Call):
+            call = statement.value
+            if not (isinstance(call.func, ast.Name) and call.func.id == "print"
+                    and not call.keywords and all(kind(arg) in {"number", "str", "lines", "text"} for arg in call.args)):
+                return False
+        else:
+            return False
+    return True
+
+
 def _iter_referenced_shell_scripts(command: str, *, cwd: Optional[str] = None) -> Iterator[Path]:
     """Yield scripts executed directly or through a POSIX shell. Each segment is read at the
     original token AND at the peeled wrapper target — additive on purpose: peeling must never REMOVE
-    a reference (a local ``./timeout`` is a script, not the coreutils wrapper)."""
-    for segment in _iter_command_segments(command):
+    a reference (a local ``./timeout`` is a script, not the coreutils wrapper). Only proven
+    read-only Python heredoc bodies may hide references from this particular scanner."""
+    from tools.shell_heredoc import strip_inert_heredoc_bodies
+
+    for segment in _iter_command_segments(strip_inert_heredoc_bodies(
+        command, safe_body=_readonly_python_log_body,
+    )):
         index = _command_token_index(segment)
         if index is None:
             continue
