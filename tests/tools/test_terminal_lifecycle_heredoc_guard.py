@@ -1,4 +1,6 @@
 """Terminal lifecycle preflight must distinguish Python source from shell script operands."""
+import pytest
+
 
 from cron.lifecycle_guard import (
     _iter_referenced_shell_scripts,
@@ -27,6 +29,48 @@ def test_quoted_python_heredoc_reads_large_log_without_executing_it(tmp_path, mo
     ) is None
 
 
+def test_double_quoted_python_heredoc_reads_large_log(tmp_path):
+    log = tmp_path / "errors.log"
+    log.write_text("ordinary log entry\n" * 70000)
+    assert log.stat().st_size > 1024 * 1024
+    command = (
+        'python3 - <<"PY"\n'
+        'from pathlib import Path\n'
+        f"p=Path({str(log)!r});lines=p.read_text(errors='replace').splitlines()\n"
+        'print(len(lines))\nPY'
+    )
+    assert list(_iter_referenced_shell_scripts(command)) == []
+    assert check(command) is False
+
+
+def test_absolute_python3_heredoc_reads_large_log(tmp_path):
+    log = tmp_path / "errors.log"
+    log.write_text("ordinary log entry\n" * 70000)
+    assert log.stat().st_size > 1024 * 1024
+    command = (
+        "/usr/bin/python3 - <<'PY'\n"
+        "from pathlib import Path\n"
+        f"p=Path({str(log)!r});lines=p.read_text(errors='replace').splitlines()\n"
+        "print(len(lines))\nPY"
+    )
+    assert log not in list(_iter_referenced_shell_scripts(command))
+    assert check(command) is False
+
+
+def test_python_heredoc_prints_last_line_from_large_log(tmp_path):
+    log = tmp_path / "errors.log"
+    log.write_text("ordinary log entry\n" * 70000)
+    assert log.stat().st_size > 1024 * 1024
+    command = (
+        "python3 - <<'PY'\n"
+        "from pathlib import Path\n"
+        f"p=Path({str(log)!r});lines=p.read_text(errors='replace').splitlines()\n"
+        "print(lines[-1])\nPY"
+    )
+    assert list(_iter_referenced_shell_scripts(command)) == []
+    assert check(command) is False
+
+
 def test_multiline_python_subprocess_cannot_hide_lifecycle_script(tmp_path, monkeypatch):
     monkeypatch.setattr("tools.process_registry._is_supervised_gateway_process", lambda: True)
     script = tmp_path / "hermes_review_restart.sh"
@@ -46,6 +90,33 @@ def test_multiline_python_subprocess_cannot_hide_lifecycle_script(tmp_path, monk
         command=command, env=None, env_type="local", cwd=str(tmp_path),
         workdir=None, session_key="test",
     ) is not None
+
+
+@pytest.mark.parametrize("opener", ["python3 - <<'PY'", 'python3 - <<"PY"',
+                                   "/usr/bin/python3 - <<'PY'"])
+def test_variant_heredocs_still_scan_executable_python_body(tmp_path, opener):
+    script = tmp_path / "restart.sh"
+    script.write_text("systemctl restart hermes-gateway\n")
+    bodies = (
+        f"import subprocess\nsubprocess.run([\n 'bash',\n {str(script)!r}\n])",
+        f"from pathlib import Path\np=Path({str(script)!r})\nimport os\nos.system('bash ' + str(p))",
+        f"from pathlib import Path\nPath=lambda x: x\nprint({str(script)!r})",
+    )
+    for body in bodies:
+        command = f"{opener}\n{body}\nPY"
+        assert check(command, cwd=str(tmp_path)), (opener, body)
+
+
+def test_last_line_expression_with_unknown_call_stays_scanned(tmp_path):
+    script = tmp_path / "restart.sh"
+    script.write_text("systemctl restart hermes-gateway\n")
+    command = (
+        "python3 - <<'PY'\nfrom pathlib import Path\n"
+        f"lines=Path({str(script)!r}).read_text(errors='replace').splitlines()\n"
+        "print(lines[-1]);import subprocess\n"
+        f"subprocess.run(['bash', {str(script)!r}])\nPY"
+    )
+    assert check(command, cwd=str(tmp_path))
 
 
 def test_quoted_heredoc_does_not_hide_executed_lifecycle_calls(tmp_path):

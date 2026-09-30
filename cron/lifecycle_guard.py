@@ -738,7 +738,7 @@ def _readonly_python_log_body(opener: str, body: str) -> bool:
     Unknown syntax/calls/imports and rebinding of Path or builtins keep the original scan.
     This is intentionally not a general Python interpreter or data-flow analyzer.
     """
-    if not re.fullmatch(r"\s*python(?:3(?:\.\d+)*)?\s+-\s+<<\s*'([A-Za-z_][A-Za-z_0-9]*)'\s*", opener):
+    if not re.fullmatch(r"\s*(?:python(?:3(?:\.\d+)*)?|/usr/bin/python3)\s+-\s+<<\s*(['\"])[A-Za-z_][A-Za-z_0-9]*\1\s*", opener):
         return False
     try:
         statements = ast.parse(body).body
@@ -758,6 +758,11 @@ def _readonly_python_log_body(opener: str, body: str) -> bool:
             return "str"
         if isinstance(node, ast.Name):
             return values.get(node.id)
+        if (isinstance(node, ast.Subscript) and kind(node.value) == "lines"
+                and isinstance(node.slice, ast.UnaryOp) and isinstance(node.slice.op, ast.USub)
+                and isinstance(node.slice.operand, ast.Constant)
+                and type(node.slice.operand.value) is int and node.slice.operand.value == 1):
+            return "str"
         if not isinstance(node, ast.Call):
             return None
         if node.keywords and not (
