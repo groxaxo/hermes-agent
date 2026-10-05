@@ -1,9 +1,11 @@
 """Tests for gateway/platforms/base.py — MessageEvent, media extraction, message truncation."""
 
+import asyncio
 import os
 import time
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 
 from gateway.platforms.base import (
@@ -55,6 +57,62 @@ class TestInboundMediaSizeCap:
         monkeypatch.setattr(base, "get_inbound_media_max_bytes", lambda: 16)
         with pytest.raises(ValueError, match="Inbound image payload is too large"):
             cache_image_from_bytes(self._PNG, ext=".png")
+
+
+class TestSafeMediaDownloadRedirects:
+    def test_revalidates_every_redirect_before_request(self, monkeypatch):
+        from gateway.platforms.base import download_safe_media_bytes
+        requested = []
+
+        def handler(request):
+            requested.append(str(request.url))
+            return httpx.Response(
+                302, headers={"Location": "http://127.0.0.1/private"}, request=request)
+
+        monkeypatch.setattr(
+            "tools.url_safety.create_ssrf_safe_async_client",
+            lambda **kwargs: httpx.AsyncClient(transport=httpx.MockTransport(handler), **kwargs))
+        safe = AsyncMock(side_effect=lambda url: "127.0.0.1" not in url)
+        monkeypatch.setattr("tools.url_safety.async_is_safe_url", safe)
+
+        with pytest.raises(ValueError, match="Blocked unsafe media URL"):
+            asyncio.run(download_safe_media_bytes("https://public.example/media"))
+        assert requested == ["https://public.example/media"]
+        assert safe.await_count == 2
+
+    def test_allowed_redirect_works_and_adapter_allowlist_applies_to_each_hop(self, monkeypatch):
+        from gateway.platforms.base import download_safe_media_bytes
+
+        def handler(request):
+            if request.url.path == "/safe-start":
+                return httpx.Response(
+                    302, headers={"Location": "https://trusted.example/final"}, request=request)
+            if request.url.path == "/final":
+                return httpx.Response(200, content=b"image", request=request)
+            return httpx.Response(
+                302, headers={"Location": "https://evil.example/media"}, request=request)
+
+        monkeypatch.setattr(
+            "tools.url_safety.create_ssrf_safe_async_client",
+            lambda **kwargs: httpx.AsyncClient(transport=httpx.MockTransport(handler), **kwargs))
+        monkeypatch.setattr("tools.url_safety.async_is_safe_url", AsyncMock(return_value=True))
+
+        def allow_cdn(url):
+            if "trusted.example" not in url:
+                raise ValueError("outside trusted CDN")
+
+        data, _headers, final_url = asyncio.run(download_safe_media_bytes(
+            "https://trusted.example/safe-start", validate_url=allow_cdn))
+        assert data == b"image"
+        assert final_url == "https://trusted.example/final"
+
+        with pytest.raises(ValueError, match="payload is too large"):
+            asyncio.run(download_safe_media_bytes(
+                "https://trusted.example/safe-start", validate_url=allow_cdn, max_bytes=4))
+
+        with pytest.raises(ValueError, match="outside trusted CDN"):
+            asyncio.run(download_safe_media_bytes(
+                "https://trusted.example/evil-start", validate_url=allow_cdn))
 
 
 class TestSecretCaptureGuidance:

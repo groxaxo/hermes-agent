@@ -346,12 +346,21 @@ async def _upload_ciphertext(session: "aiohttp.ClientSession", *, ciphertext: by
     return await asyncio.wait_for(_do(), timeout=120)
 
 
-async def _download_bytes(session: "aiohttp.ClientSession", *, url: str, timeout_seconds: float = 60.0) -> bytes:
-    async def _do() -> bytes:
-        async with session.get(url) as response:
-            response.raise_for_status()
-            return await response.read()
-    return await asyncio.wait_for(_do(), timeout=timeout_seconds)
+async def _download_bytes(
+    session: "aiohttp.ClientSession", *, url: str, timeout_seconds: float = 60.0,
+    validate_url=None,
+) -> bytes:
+    """Download media through the shared SSRF-safe, redirect-aware transport.
+
+    ``session`` remains in the signature for caller compatibility; media downloads do not rely
+    on its cookies or authentication. Adapter-specific allowlists can be enforced with
+    ``validate_url`` on the initial URL and every redirect target.
+    """
+    from gateway.platforms.base import download_safe_media_bytes
+
+    data, _headers, _final_url = await download_safe_media_bytes(
+        url, timeout=timeout_seconds, media_type="Weixin media", validate_url=validate_url)
+    return data
 
 
 _WEIXIN_CDN_ALLOWLIST: frozenset[str] = frozenset({
@@ -381,7 +390,8 @@ async def _download_and_decrypt_media(
         url = full_url
     else:
         raise RuntimeError("media item had neither encrypt_query_param nor full_url")
-    raw = await _download_bytes(session, url=url, timeout_seconds=timeout_seconds)
+    raw = await _download_bytes(
+        session, url=url, timeout_seconds=timeout_seconds, validate_url=_assert_weixin_cdn_url)
     return _aes128_ecb_decrypt(raw, _parse_aes_key(aes_key_b64)) if aes_key_b64 else raw
 
 
@@ -1163,9 +1173,6 @@ class WeixinAdapter(BasePlatformAdapter):
         return await self._send_file_result(chat_id, audio_path, caption or "[voice message as attachment]", "send_voice", force_file_attachment=True)
 
     async def _download_remote_media(self, url: str) -> str:
-        from tools.url_safety import is_safe_url
-        if not is_safe_url(url):
-            raise ValueError(f"Blocked unsafe URL (SSRF protection): {url}")
         assert self._send_session is not None
         data = await _download_bytes(self._send_session, url=url, timeout_seconds=30)
         with tempfile.NamedTemporaryFile(delete=False, suffix=Path(url.split("?", 1)[0]).suffix or ".bin") as handle:

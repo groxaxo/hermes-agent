@@ -194,22 +194,25 @@ def _apply_identity_header(server_name: str, config: dict, headers: dict) -> dic
 
 def _make_redirect_header_stripper(original_url, *, strict: bool = False,
                                    configured_header_names: "set[str] | frozenset[str]" = frozenset()):
-    """httpx response hook: strips ``Authorization`` when a redirect leaves the original origin;
-    with *strict* (Agent Plugins v1 ``strict_redirect_headers``) every configured header (lowercase
-    names in *configured_header_names*) is stripped too — v1 forbids forwarding them cross-origin."""
+    """httpx request hook: strip credentials before any cross-origin request is sent.
+
+    Request hooks run after httpx has constructed each redirect request.  A response hook cannot
+    safely do this job: at response-hook time ``response.next_request`` has not necessarily been
+    populated yet, which allowed the copied headers to reach the redirect target unchanged.
+    """
     origin = (original_url.scheme, original_url.host, original_url.port)
 
-    async def _strip_on_cross_origin_redirect(response):
-        target = response.next_request.url if response.is_redirect and response.next_request else None
-        if target is None or (target.scheme, target.host, target.port) == origin:
+    async def _strip_on_cross_origin_request(request):
+        target = request.url
+        if (target.scheme, target.host, target.port) == origin:
             return
-        headers = response.next_request.headers
+        headers = request.headers
         headers.pop("authorization", None)
         headers.pop("Authorization", None)
         for _name in configured_header_names if strict else ():
             while _name in headers:
                 del headers[_name]
-    return _strip_on_cross_origin_redirect
+    return _strip_on_cross_origin_request
 
 
 def _exc_children(exc: BaseException) -> List[BaseException]:

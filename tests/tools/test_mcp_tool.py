@@ -1370,9 +1370,8 @@ class TestBuildSafeEnv:
         assert "DATABASE_URL" not in result
         assert "API_SECRET" not in result
 
-    def test_secret_source_injected_vars_are_passed(self, monkeypatch):
-        """Vars tagged by an external secret source (Bitwarden/1Password) are
-        deliberately allowed for MCP stdio servers."""
+    def test_secret_source_vars_require_explicit_server_env(self, monkeypatch):
+        """External-vault discovery never grants a secret to every MCP child."""
         from hermes_cli import env_loader
         from tools.mcp_tool_config import _build_safe_env
 
@@ -1388,25 +1387,27 @@ class TestBuildSafeEnv:
             result = _build_safe_env(None)
 
         assert result["PATH"] == "/usr/bin"
-        assert result["ALPACA_API_KEY"] == "from-bws-key"
-        assert result["NOTION_TOKEN"] == "from-op"
+        assert "ALPACA_API_KEY" not in result
+        assert "NOTION_TOKEN" not in result
         assert "UNTRACKED_SECRET_KEY" not in result
 
-    def test_secret_source_vars_resolve_through_active_profile_scope(self, monkeypatch):
-        """Under multiplex the stdio child gets the ROUTED profile's value for a source-tagged name,
-        never the launch profile's os.environ copy; a name the profile lacks is omitted."""
-        from agent.secret_scope import set_multiplex_active, set_secret_scope, reset_secret_scope
-        from hermes_cli import env_loader
-        from tools.mcp_tool_config import _build_safe_env
+        with patch.dict("os.environ", fake_env, clear=True):
+            explicit = _build_safe_env({"ALPACA_API_KEY": "from-bws-key"})
+        assert explicit["ALPACA_API_KEY"] == "from-bws-key"
+        assert "NOTION_TOKEN" not in explicit
 
-        monkeypatch.setitem(env_loader._SECRET_SOURCES, "GITHUB_TOKEN", "bitwarden")
-        monkeypatch.setitem(env_loader._SECRET_SOURCES, "NOTION_TOKEN", "onepassword")
+    def test_explicit_server_env_resolves_through_active_profile_scope(self, monkeypatch):
+        """Only an explicit server env placeholder receives the routed profile's value."""
+        from agent.secret_scope import set_multiplex_active, set_secret_scope, reset_secret_scope
+        from tools.mcp_tool_config import _build_safe_env, _interpolate_env_vars
+
         fake_env = {"PATH": "/usr/bin", "GITHUB_TOKEN": "default-profile", "NOTION_TOKEN": "default-notion"}
         set_multiplex_active(True)
         token = set_secret_scope({"GITHUB_TOKEN": "profile-b"})
         try:
             with patch.dict("os.environ", fake_env, clear=True):
-                result = _build_safe_env(None)
+                server_env = _interpolate_env_vars({"GITHUB_TOKEN": "${GITHUB_TOKEN}"})
+                result = _build_safe_env(server_env)
         finally:
             reset_secret_scope(token)
             set_multiplex_active(False)
@@ -3092,17 +3093,9 @@ class TestMCPDiscoveryCrossProcessLock:
 class TestRedirectHeaderStripper:
     """Cross-origin redirect header boundary (portable Agent Plugins v1)."""
 
-    def _make_response(self, next_headers):
+    def _make_request(self, url, headers):
         import httpx
-
-        next_request = httpx.Request(
-            "GET", "https://other.example.test/mcp", headers=next_headers
-        )
-        response = SimpleNamespace(
-            is_redirect=True,
-            next_request=next_request,
-        )
-        return response, next_request
+        return httpx.Request("GET", url, headers=headers)
 
     def test_default_strips_only_authorization(self):
         import httpx
@@ -3112,12 +3105,11 @@ class TestRedirectHeaderStripper:
         hook = _make_redirect_header_stripper(
             httpx.URL("https://origin.example.test/mcp")
         )
-        response, next_request = self._make_response(
-            {"Authorization": "Bearer x", "X-Tenant": "t"}
-        )
-        asyncio.run(hook(response))
-        assert "authorization" not in next_request.headers
-        assert next_request.headers["x-tenant"] == "t"
+        request = self._make_request(
+            "https://other.example.test/mcp", {"Authorization": "Bearer x", "X-Tenant": "t"})
+        asyncio.run(hook(request))
+        assert "authorization" not in request.headers
+        assert request.headers["x-tenant"] == "t"
 
     def test_strict_strips_configured_headers_cross_origin(self):
         import httpx
@@ -3129,14 +3121,14 @@ class TestRedirectHeaderStripper:
             strict=True,
             configured_header_names={"x-tenant"},
         )
-        response, next_request = self._make_response(
-            {"Authorization": "Bearer x", "X-Tenant": "t", "Accept": "a"}
-        )
-        asyncio.run(hook(response))
-        assert "authorization" not in next_request.headers
-        assert "x-tenant" not in next_request.headers
+        request = self._make_request(
+            "https://other.example.test/mcp",
+            {"Authorization": "Bearer x", "X-Tenant": "t", "Accept": "a"})
+        asyncio.run(hook(request))
+        assert "authorization" not in request.headers
+        assert "x-tenant" not in request.headers
         # Client-generated headers unrelated to package config survive.
-        assert next_request.headers["accept"] == "a"
+        assert request.headers["accept"] == "a"
 
     def test_same_origin_redirect_keeps_headers(self):
         import httpx
@@ -3148,12 +3140,88 @@ class TestRedirectHeaderStripper:
             strict=True,
             configured_header_names={"x-tenant"},
         )
-        next_request = httpx.Request(
+        request = httpx.Request(
             "GET",
             "https://origin.example.test/other",
             headers={"Authorization": "Bearer x", "X-Tenant": "t"},
         )
-        response = SimpleNamespace(is_redirect=True, next_request=next_request)
-        asyncio.run(hook(response))
-        assert next_request.headers["authorization"] == "Bearer x"
-        assert next_request.headers["x-tenant"] == "t"
+        asyncio.run(hook(request))
+        assert request.headers["authorization"] == "Bearer x"
+        assert request.headers["x-tenant"] == "t"
+
+    def test_httpx_redirect_lifecycle_strips_before_target_send(self):
+        import httpx
+        from tools.mcp_tool_errors import _make_redirect_header_stripper
+
+        seen = []
+
+        def handler(request):
+            seen.append((request.url.host, dict(request.headers)))
+            if request.url.host == "origin.example.test":
+                return httpx.Response(
+                    302, headers={"Location": "https://other.example.test/mcp"}, request=request)
+            return httpx.Response(200, request=request)
+
+        async def run():
+            hook = _make_redirect_header_stripper(
+                httpx.URL("https://origin.example.test/mcp"), strict=True,
+                configured_header_names={"x-api-key"})
+            async with httpx.AsyncClient(
+                transport=httpx.MockTransport(handler), follow_redirects=True,
+                headers={"Authorization": "Bearer x", "X-Api-Key": "secret"},
+                event_hooks={"request": [hook]},
+            ) as client:
+                await client.get("https://origin.example.test/mcp")
+
+        asyncio.run(run())
+        assert seen[0][1]["x-api-key"] == "secret"
+        assert "authorization" not in seen[1][1]
+        assert "x-api-key" not in seen[1][1]
+
+    def test_sse_transport_uses_guarded_client_factory(self):
+        import httpx
+        from tools.mcp_tool import MCPServerTask
+
+        seen = []
+
+        def handler(request):
+            seen.append((request.url.host, dict(request.headers)))
+            if request.url.host == "origin.example.test":
+                return httpx.Response(
+                    302, headers={"Location": "https://other.example.test/sse"}, request=request)
+            return httpx.Response(200, request=request)
+
+        real_async_client = httpx.AsyncClient
+
+        class FakeSdkHttpx:
+            URL = httpx.URL
+            Timeout = httpx.Timeout
+
+            @staticmethod
+            def AsyncClient(**kwargs):
+                return real_async_client(transport=httpx.MockTransport(handler), **kwargs)
+
+        captured = {}
+
+        def fake_sse_client(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace()
+
+        server = MCPServerTask("sse-server")
+        with patch("tools.mcp_tool.sse_client", fake_sse_client), patch(
+                "tools.mcp_tool.sdk_httpx", return_value=FakeSdkHttpx):
+            server._sse_transport(
+                "https://origin.example.test/sse",
+                {"X-Api-Key": "secret", "X-Identity": "tenant-a"},
+                5.0, True, None, None, False, {"x-api-key", "x-identity"})
+
+        async def run():
+            factory = captured["httpx_client_factory"]
+            async with factory(headers={"X-Api-Key": "secret", "X-Identity": "tenant-a"}) as client:
+                await client.get("https://origin.example.test/sse")
+
+        asyncio.run(run())
+        assert seen[0][1]["x-api-key"] == "secret"
+        assert seen[0][1]["x-identity"] == "tenant-a"
+        assert "x-api-key" not in seen[1][1]
+        assert "x-identity" not in seen[1][1]

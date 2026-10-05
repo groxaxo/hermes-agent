@@ -557,10 +557,11 @@ def validate_inbound_media_size(
         raise ValueError(f"Inbound {media_type} payload is too large ({size} bytes > {limit} bytes)")
 
 
-async def _read_httpx_body_with_limit(response, *, media_type: str) -> bytes:
+async def _read_httpx_body_with_limit(response, *, media_type: str,
+                                      max_bytes: Optional[int] = None) -> bytes:
     """Read an httpx streaming body under the media cap: reject an oversized ``Content-Length``
     early, then re-check the running total per chunk (a lying/absent header can't smuggle more)."""
-    max_bytes = get_inbound_media_max_bytes()
+    max_bytes = get_inbound_media_max_bytes() if max_bytes is None else max_bytes
     content_length = response.headers.get("content-length")
     if content_length:
         try:
@@ -576,6 +577,61 @@ async def _read_httpx_body_with_limit(response, *, media_type: str) -> bytes:
         validate_inbound_media_size(total, media_type=media_type, max_bytes=max_bytes)
         chunks.append(chunk)
     return b"".join(chunks)
+
+
+async def download_safe_media_bytes(
+    url: str, *, timeout: float = 30.0, media_type: str = "media",
+    max_bytes: Optional[int] = None, validate_url=None, max_redirects: int = 5,
+) -> tuple[bytes, dict[str, str], str]:
+    """Download public HTTP(S) media with a size cap and a validated redirect chain.
+
+    ``validate_url`` may impose a stricter adapter-specific policy (for example, a CDN
+    allowlist). It is applied to the initial URL and every redirect target. The shared
+    httpx transport also revalidates DNS at connect time, closing the validation-to-dial gap.
+    """
+    from tools.url_safety import (
+        async_is_safe_url,
+        create_ssrf_safe_async_client,
+        redirect_target_from_response,
+    )
+
+    async def _download() -> tuple[bytes, dict[str, str], str]:
+        current_url = str(url)
+        async with create_ssrf_safe_async_client(
+            timeout=timeout, follow_redirects=False,
+        ) as client:
+            for redirect_count in range(max_redirects + 1):
+                if not await async_is_safe_url(current_url):
+                    raise ValueError(
+                        f"Blocked unsafe {media_type} URL (SSRF protection): "
+                        f"{safe_url_for_log(current_url)}"
+                    )
+                if validate_url is not None:
+                    validate_url(current_url)
+                async with client.stream("GET", current_url) as response:
+                    if response.is_redirect:
+                        target = redirect_target_from_response(response)
+                        if not target:
+                            raise ValueError(
+                                f"Redirect without Location while downloading {media_type}"
+                            )
+                        if redirect_count >= max_redirects:
+                            raise ValueError(
+                                f"Too many redirects while downloading {media_type}"
+                            )
+                        current_url = target
+                        continue
+                    response.raise_for_status()
+                    data = await _read_httpx_body_with_limit(
+                        response, media_type=media_type, max_bytes=max_bytes,
+                    )
+                    headers = {str(key).lower(): str(value) for key, value in response.headers.items()}
+                    return data, headers, str(response.url)
+        raise ValueError(f"Too many redirects while downloading {media_type}")
+
+    # Preserve the replaced aiohttp/asyncio total timeout across DNS, redirects, and body reads;
+    # httpx's own scalar timeout is per operation and does not bound a slow-drip chain end to end.
+    return await asyncio.wait_for(_download(), timeout=timeout)
 
 
 def _cache_dir_accessors(kind: str, constant_name: str, new_subpath: str, old_name: str):

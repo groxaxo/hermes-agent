@@ -329,6 +329,7 @@ class MattermostAdapter(BasePlatformAdapter):
     async def _send_url_as_file(self, chat_id: str, url: str, caption: Optional[str], reply_to: Optional[str],
                                 kind: str = "file", metadata: _Metadata = None) -> SendResult:
         """Download a URL and upload it as a file attachment (text fallback with the URL on failure)."""
+        from gateway.platforms.base import download_safe_media_bytes
         from tools.url_safety import is_safe_url
 
         async def fallback() -> SendResult:
@@ -337,19 +338,26 @@ class MattermostAdapter(BasePlatformAdapter):
         if not is_safe_url(url):
             logger.warning("Mattermost: blocked unsafe URL (SSRF protection)")
             return await fallback()
-        import aiohttp
+        import httpx
         for attempt in range(3):  # retry 5xx/429 and network errors twice with linear backoff
             try:
-                async with self._session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
-                    if (resp.status >= 500 or resp.status == 429) and attempt < 2:
-                        logger.debug("Mattermost download retry %d/2 for %s (status %d)",
-                                     attempt + 1, url[:80], resp.status)
-                    elif resp.status >= 400:
-                        return await fallback()
-                    else:
-                        file_data, ct = await resp.read(), resp.content_type or "application/octet-stream"
-                        break
-            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                file_data, headers, _final_url = await download_safe_media_bytes(
+                    url, timeout=30.0, media_type=f"Mattermost {kind}")
+                ct = headers.get("content-type", "application/octet-stream").split(";", 1)[0]
+                break
+            except httpx.HTTPStatusError as exc:
+                status = exc.response.status_code
+                if status < 500 and status != 429:
+                    return await fallback()
+                if attempt < 2:
+                    logger.debug("Mattermost download retry %d/2 for %s (status %d)",
+                                 attempt + 1, url[:80], status)
+                else:
+                    return await fallback()
+            except ValueError as exc:
+                logger.warning("Mattermost: blocked media download for %s: %s", url[:80], exc)
+                return await fallback()
+            except (httpx.HTTPError, asyncio.TimeoutError) as exc:
                 if attempt == 2:
                     logger.warning("Mattermost: failed to download %s after %d attempts: %s", url, attempt + 1, exc)
                     return await fallback()
@@ -374,7 +382,6 @@ class MattermostAdapter(BasePlatformAdapter):
 
     async def _load_batch_image(self, image_url: str, index: int) -> Optional[Tuple[bytes, str, str]]:
         """Read a file:// or remote image for a batch post → (data, filename, content_type), or None to skip."""
-        import aiohttp
         if image_url.startswith("file://"):
             local_path = _unquote(image_url[7:])
             p = Path(local_path)
@@ -382,16 +389,15 @@ class MattermostAdapter(BasePlatformAdapter):
                 logger.warning("Mattermost: skipping missing image %s", local_path)
                 return None
             return p.read_bytes(), p.name, mimetypes.guess_type(p.name)[0] or "image/png"
+        from gateway.platforms.base import download_safe_media_bytes
         from tools.url_safety import is_safe_url
         if not is_safe_url(image_url):
             logger.warning("Mattermost: blocked unsafe image URL in batch")
             return None
         try:
-            async with self._session.get(image_url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
-                if resp.status >= 400:
-                    logger.warning("Mattermost: failed to download image (HTTP %d): %s", resp.status, image_url[:80])
-                    return None
-                file_data, ct = await resp.read(), resp.content_type or "image/png"
+            file_data, headers, _final_url = await download_safe_media_bytes(
+                image_url, timeout=30.0, media_type="Mattermost batch image")
+            ct = headers.get("content-type", "image/png").split(";", 1)[0]
         except Exception as dl_err:
             logger.warning("Mattermost: download failed for %s: %s", image_url[:80], dl_err)
             return None

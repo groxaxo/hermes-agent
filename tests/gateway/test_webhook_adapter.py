@@ -568,6 +568,47 @@ class TestIdempotency:
             data = await resp2.json()
             assert data["status"] == "duplicate"
 
+    @pytest.mark.asyncio
+    async def test_changed_unsigned_delivery_id_cannot_replay_body_before_script(self):
+        routes = {"idem": {"secret": _INSECURE_NO_AUTH, "script": "filter.py", "prompt": "{a}"}}
+        adapter = _make_adapter(routes=routes, host="127.0.0.1")
+        adapter.handle_message = AsyncMock()
+        adapter._route_processor.run_route_script = MagicMock(return_value=(True, {"a": 1}))
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            first = await cli.post(
+                "/webhooks/idem", json={"a": 1}, headers={"X-GitHub-Delivery": "delivery-a"})
+            second = await cli.post(
+                "/webhooks/idem", json={"a": 1}, headers={"X-GitHub-Delivery": "delivery-b"})
+            second_data = await second.json()
+
+        assert first.status == 202
+        assert second.status == 200
+        assert second_data["status"] == "duplicate"
+        adapter._route_processor.run_route_script.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_replay_is_claimed_before_event_filter(self):
+        routes = {"idem": {"secret": _INSECURE_NO_AUTH, "events": ["allowed"], "prompt": "test"}}
+        adapter = _make_adapter(routes=routes, host="127.0.0.1")
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            ignored = await cli.post(
+                "/webhooks/idem", json={"a": 1},
+                headers={"X-GitHub-Delivery": "one", "X-GitHub-Event": "blocked"})
+            replay = await cli.post(
+                "/webhooks/idem", json={"a": 1},
+                headers={"X-GitHub-Delivery": "two", "X-GitHub-Event": "allowed"})
+            ignored_data = await ignored.json()
+            replay_data = await replay.json()
+
+        assert ignored_data["status"] == "ignored"
+        assert replay_data["status"] == "duplicate"
+        adapter.handle_message.assert_not_called()
+
 
 # ===================================================================
 # Rate limiting

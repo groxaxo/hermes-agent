@@ -272,8 +272,12 @@ class MCPServerTransportMixin:
             ct = _content_type_base(resp)
             return _is_2xx(resp) and bool(ct) and ct not in self._MCP_CONTENT_TYPES
         probe_headers = dict(headers) if headers else {}
+        redirect_header_guard = _make_redirect_header_stripper(
+            _httpx.URL(url), strict=True,
+            configured_header_names={key.lower() for key in probe_headers})
         try:
             async with _httpx.AsyncClient(verify=ssl_verify, follow_redirects=True, timeout=_httpx.Timeout(timeout),
+                                          event_hooks={"request": [redirect_header_guard]},
                                           **_present(cert=client_cert)) as client:
                 resp = await client.head(url, headers=probe_headers)  # cheapest; GET on 405/501
                 if resp.status_code in (405, 501):
@@ -337,11 +341,9 @@ class MCPServerTransportMixin:
             raise
 
     def _sse_transport(self, url: str, headers: dict, connect_timeout: float,
-                       ssl_verify, client_cert, oauth_auth, strict_cfg_headers: bool):
-        """``sse_client`` context manager for ``transport: sse`` entries."""
-        if strict_cfg_headers:  # fail closed: SSE cannot enforce the redirect boundary
-            raise ValueError(f"MCP server '{self.name}': strict_redirect_headers is "
-                             "not supported on the SSE transport.")
+                       ssl_verify, client_cert, oauth_auth, strict_cfg_headers: bool,
+                       configured_header_names: set):
+        """``sse_client`` context manager with the same redirect credential boundary as HTTP."""
         if _core.sse_client is None:
             raise ImportError(f"MCP server '{self.name}' requires SSE transport but "
                               "mcp.client.sse.sse_client is not available. "
@@ -350,13 +352,15 @@ class MCPServerTransportMixin:
         # Streamable HTTP read timeout), not tool_timeout. ``auth`` must be forwarded or OAuth SSE 401s silently.
         sse_kwargs: dict = {"url": url, "headers": headers or None, "timeout": float(connect_timeout),
                             "sse_read_timeout": 300.0, **_present(auth=oauth_auth)}
-        if client_cert is not None or ssl_verify is not True:
-            # sse_client has no verify/cert kwargs: an httpx_client_factory forwards the SDK's (headers,
-            # auth, timeout) and layers TLS on top. Client MUST come from the SDK's httpx (httpx2 on mcp >= 2.0).
-            _httpx_mod = _core.sdk_httpx()
-            sse_kwargs["httpx_client_factory"] = lambda headers=None, timeout=None, auth=None: _httpx_mod.AsyncClient(
+        # Own the SDK client even with default TLS so its redirect requests pass through the
+        # pre-send credential guard. Client MUST come from the SDK's httpx (httpx2 on mcp >= 2.0).
+        _httpx_mod = _core.sdk_httpx()
+        redirect_header_guard = _make_redirect_header_stripper(
+            _httpx_mod.URL(url), strict=True, configured_header_names=configured_header_names)
+        sse_kwargs["httpx_client_factory"] = lambda headers=None, timeout=None, auth=None: _httpx_mod.AsyncClient(
                 follow_redirects=True, verify=ssl_verify,
                 timeout=timeout if timeout is not None else _httpx_mod.Timeout(30.0, read=300.0),
+                event_hooks={"request": [redirect_header_guard]},
                 **_present(headers=headers, auth=auth, cert=client_cert))
         return _core.sse_client(**sse_kwargs)
 
@@ -376,10 +380,10 @@ class MCPServerTransportMixin:
         # SDK's httpx (httpx2 on mcp >= 2.0) since the SDK sends its own Requests through it.
         httpx = _core.sdk_httpx()
         _strip_auth_on_cross_origin_redirect = _make_redirect_header_stripper(
-            httpx.URL(url), strict=strict_cfg_headers, configured_header_names=configured_header_names)
+            httpx.URL(url), strict=True, configured_header_names=configured_header_names)
         client_kwargs: dict = {"follow_redirects": True, "timeout": httpx.Timeout(float(connect_timeout), read=300.0),
                                "verify": ssl_verify, **({"headers": headers} if headers else {}),
-                               "event_hooks": {"response": [_strip_auth_on_cross_origin_redirect]},
+                               "event_hooks": {"request": [_strip_auth_on_cross_origin_redirect]},
                                **_present(auth=oauth_auth, cert=client_cert)}
 
         @asynccontextmanager
@@ -398,19 +402,19 @@ class MCPServerTransportMixin:
                               "Upgrade the mcp package to get HTTP support.")
         url = config["url"]
         headers = dict(config.get("headers") or {})
-        # Agent Plugins v1 strict_redirect_headers: configured headers MUST NOT follow a cross-origin
-        # redirect — capture their names BEFORE client-generated headers are merged in.
-        configured_header_names = {key.lower() for key in headers}
         headers = _apply_identity_header(self.name, config, headers)  # explicit same-name headers win
         # Seed MCP-Protocol-Version (user override wins) from the HANDSHAKE version, not the latest: a
         # 2026-07-28 header routes the handshake-era ``initialize()`` onto the envelope ladder, which rejects it.
         if not any(key.lower() == "mcp-protocol-version" for key in headers):
             headers["mcp-protocol-version"] = _core.LATEST_HANDSHAKE_VERSION
+        # Capture after identity/protocol synthesis so every caller-controlled or synthesized MCP
+        # header is removed before a cross-origin redirect request is sent.
+        configured_header_names = {key.lower() for key in headers}
         connect_timeout = config.get("connect_timeout", _core._DEFAULT_CONNECT_TIMEOUT)
         common = (url, headers, connect_timeout, config.get("ssl_verify", True), _resolve_client_cert(self.name, config),
                   self._build_oauth_auth(url, config), bool(config.get("strict_redirect_headers")))
         if config.get("transport") == "sse":
-            transport, label = self._sse_transport(*common), "SSE"
+            transport, label = self._sse_transport(*common, configured_header_names), "SSE"
         else:
             transport = self._streamable_http_transport(*common, configured_header_names)
             label = "HTTP" if _core._MCP_NEW_HTTP else "legacy HTTP"

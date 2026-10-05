@@ -169,8 +169,8 @@ def verify_export_file(path: Path | str, session: dict[str, Any]) -> tuple[bool,
 def redact_session_data(session: dict[str, Any]) -> dict[str, Any]:
     """Return a copy of a session export dict with secrets redacted.
 
-    Every message's content and tool-call arguments go through the force-mode redaction pass
-    (``agent.redact.redact_sensitive_text``) so credentials in tool output never land in exports.
+    Every string in the export, including metadata, message content, and tool-call arguments,
+    goes through the force-mode redaction pass so credentials never land in redacted exports.
     """
     from agent.redact import redact_sensitive_text
 
@@ -183,7 +183,38 @@ def redact_session_data(session: dict[str, Any]) -> dict[str, Any]:
             return {k: _clean(v) for k, v in value.items()}
         return value
 
-    return {**session, **{k: _clean(session[k]) for k in ("messages", "segments") if session.get(k) is not None}}
+    cleaned = _clean(session)
+    return cleaned if isinstance(cleaned, dict) else {}
+
+
+def redact_session_for_messaging(session: dict[str, Any]) -> dict[str, Any]:
+    """Build the safe transcript projection used by network messaging adapters.
+
+    Messaging exports keep the visible user/assistant conversation, force-redact all strings, and
+    omit tool result rows, tool calls, and compression segments.  The caller's export dictionary is
+    never mutated.
+    """
+    redacted = redact_session_data(session)
+    visible_metadata = (
+        "id", "session_id", "title", "source", "started_at", "created_at", "last_active",
+        "updated_at", "ended_at", "model", "billing_provider", "provider", "archived",
+        "lineage_session_ids",
+    )
+    safe = {key: redacted[key] for key in visible_metadata if key in redacted}
+    messages: list[dict[str, Any]] = []
+    source_messages = [message for segment in _segments(redacted)
+                       for message in (segment.get("messages") or [])]
+    for message in source_messages:
+        if not isinstance(message, dict) or message.get("role") == "tool":
+            continue
+        projected = {key: message[key] for key in ("role", "content", "timestamp", "created_at")
+                     if key in message}
+        if projected.get("content") not in (None, ""):
+            messages.append(projected)
+    safe["messages"] = messages
+    safe["message_count"] = len(messages)
+    safe["tool_call_count"] = 0
+    return safe
 
 
 def _export_dir(output_dir: Path | str) -> Path:

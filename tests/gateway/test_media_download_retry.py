@@ -513,47 +513,42 @@ class TestMattermostSendUrlAsFile:
     def test_retries_on_429_then_succeeds(self, _mock_safe):
         """429 on first attempt is retried; 200 on second attempt succeeds."""
         adapter = _make_mm_adapter()
-
-        resp_429 = _make_aiohttp_resp(429)
-        resp_200 = _make_aiohttp_resp(200)
-        adapter._session.get = MagicMock(side_effect=[resp_429, resp_200])
+        download = AsyncMock(side_effect=[
+            _make_http_status_error(429),
+            (b"file bytes", {"content-type": "image/jpeg"}, "http://cdn.example.com/img.png"),
+        ])
 
         mock_sleep = AsyncMock()
 
         async def run():
-            with patch("asyncio.sleep", mock_sleep):
+            with patch("asyncio.sleep", mock_sleep), patch(
+                    "gateway.platforms.base.download_safe_media_bytes", download):
                 return await adapter._send_url_as_file(
                     "C123", "http://cdn.example.com/img.png", None, None
                 )
 
         result = asyncio.run(run())
         assert result.success
-        assert adapter._session.get.call_count == 2
+        assert download.await_count == 2
         mock_sleep.assert_called_once()
 
 
     def test_falls_back_on_client_error(self, _mock_safe):
         """aiohttp.ClientError on every attempt falls back to send() with URL."""
-        import aiohttp
-
         adapter = _make_mm_adapter()
-
-        error_resp = MagicMock()
-        error_resp.__aenter__ = AsyncMock(
-            side_effect=aiohttp.ClientConnectionError("connection refused")
-        )
-        error_resp.__aexit__ = AsyncMock(return_value=False)
-        adapter._session.get = MagicMock(return_value=error_resp)
+        request = httpx.Request("GET", "http://cdn.example.com/img.png")
+        download = AsyncMock(side_effect=httpx.ConnectError("connection refused", request=request))
 
         async def run():
-            with patch("asyncio.sleep", new_callable=AsyncMock):
+            with patch("asyncio.sleep", new_callable=AsyncMock), patch(
+                    "gateway.platforms.base.download_safe_media_bytes", download):
                 return await adapter._send_url_as_file(
                     "C123", "http://cdn.example.com/img.png", None, None
                 )
 
         asyncio.run(run())
 
+        assert download.await_count == 3
         adapter.send.assert_called_once()
         text_arg = adapter.send.call_args[0][1]
         assert "http://cdn.example.com/img.png" in text_arg
-

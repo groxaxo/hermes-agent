@@ -1,6 +1,9 @@
 """Tests for the /save current-session export helpers."""
 
 import json
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -10,6 +13,7 @@ from hermes_cli.session_export import (
     normalize_save_format,
     render_session_for_save,
 )
+from hermes_cli.session_export_md import redact_session_for_messaging
 
 
 SESSION = {
@@ -85,3 +89,77 @@ class TestDefaultSaveFilename:
 
     def test_empty_session_id(self):
         assert default_save_filename("", "html") == "hermes_session_session.html"
+
+
+class TestMessagingExportProjection:
+    def test_redacts_secrets_and_omits_tool_records_without_mutating_source(self):
+        session = {
+            **SESSION,
+            "system_prompt": "hidden system token sk-proj-abcdefghijklmnopqrstuvwxyz123456",
+            "model_config": {"api_key": "sk-proj-abcdefghijklmnopqrstuvwxyz123456"},
+            "cwd": "/private/home/alice/project",
+            "messages": [
+                {"role": "user", "content": "Use sk-proj-abcdefghijklmnopqrstuvwxyz123456"},
+                {"role": "assistant", "content": "Done", "tool_calls": [{"arguments": {"token": "secret"}}]},
+                {"role": "tool", "name": "shell", "content": "API_KEY=super-secret-value"},
+            ],
+            "segments": [{"messages": [{"role": "user", "content": "segment secret sk-proj-abcdefghijklmnopqrstuvwxyz123456"}]}],
+        }
+
+        projected = redact_session_for_messaging(session)
+
+        assert "segments" not in projected
+        assert "system_prompt" not in projected
+        assert "model_config" not in projected
+        assert "cwd" not in projected
+        assert all(message["role"] != "tool" for message in projected["messages"])
+        assert all("tool_calls" not in message for message in projected["messages"])
+        rendered = "\n".join(render_session_for_save(projected, fmt) for fmt in SAVE_FORMATS)
+        assert "sk-proj-abcdefghijklmnopqrstuvwxyz123456" not in rendered
+        assert "API_KEY=super-secret-value" not in rendered
+        assert session["messages"][1]["tool_calls"]
+        assert session["messages"][2]["role"] == "tool"
+
+    @pytest.mark.asyncio
+    async def test_gateway_save_always_sends_safe_projection(self):
+        from gateway.config import Platform
+        from gateway.platforms.event import MessageEvent
+        from gateway.session import SessionSource
+        from gateway.slash_commands_session import GatewaySessionCommandsMixin
+
+        raw = {
+            "id": "session-1",
+            "system_prompt": "hidden system instruction",
+            "model_config": {"api_key": "sk-proj-abcdefghijklmnopqrstuvwxyz123456"},
+            "messages": [
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "using sk-proj-abcdefghijklmnopqrstuvwxyz123456"},
+                {"role": "tool", "content": "private tool result"},
+            ],
+        }
+        captured = {}
+
+        async def send_document(**kwargs):
+            captured["body"] = Path(kwargs["file_path"]).read_text(encoding="utf-8")
+
+        class Handler(GatewaySessionCommandsMixin):
+            async_session_store = SimpleNamespace(
+                get_or_create_session=AsyncMock(return_value=SimpleNamespace(session_id="session-1")))
+            _session_db = SimpleNamespace(export_session=AsyncMock(return_value=raw))
+
+            @staticmethod
+            def get_adapter(_platform):
+                return SimpleNamespace(send_document=send_document)
+
+        event = MessageEvent(
+            text="/save json",
+            source=SessionSource(platform=Platform.TELEGRAM, chat_id="chat-1", user_id="user-1"),
+        )
+        result = await Handler()._handle_save_command(event)
+
+        assert result == "Export complete."
+        assert "hello" in captured["body"]
+        assert "sk-proj-abcdefghijklmnopqrstuvwxyz123456" not in captured["body"]
+        assert "private tool result" not in captured["body"]
+        assert "hidden system instruction" not in captured["body"]
+        assert "model_config" not in captured["body"]

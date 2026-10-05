@@ -95,20 +95,12 @@ _CONTEXT_VAR_RESOLVERS = {
 
 def _build_safe_env(user_env: Optional[dict]) -> dict:
     """Filtered env for stdio subprocesses so API keys/tokens don't leak: the safe baseline
-    keys, ``XDG_*``, vars injected by an external secret source (users configured that backend
-    precisely so subprocesses can consume them), plus the server config's own ``env``."""
-    from agent.secret_scope import get_secret
-    from hermes_cli.env_loader import secret_source_names
+    keys, ``XDG_*``, and only the server config's explicit ``env``.  External-vault secrets are
+    resolved while interpolating that per-server config; globally discovered secret names must
+    never be sprayed into every MCP child process."""
     env = {
         key: value for key, value in os.environ.items()
         if key in _SAFE_ENV_KEYS or key.upper() in _SAFE_ENV_KEYS_CASE_INSENSITIVE or key.startswith("XDG_")}
-    # Source-tagged names are process-wide (any profile's hydration tags them) while os.environ
-    # holds only the LAUNCH profile's values, so the value must come from the active profile's
-    # secret scope; a profile that lacks the name gets nothing, never another profile's token.
-    for key in secret_source_names():
-        value = get_secret(key)
-        if value is not None:
-            env[key] = value
     for key in ("HERMES_KANBAN_DB", "HERMES_KANBAN_BOARD"):
         if key in os.environ:
             env[key] = os.environ[key]

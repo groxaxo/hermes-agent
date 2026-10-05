@@ -394,12 +394,14 @@ class TestWeixinOutboundMedia:
 class TestWeixinRemoteMediaSafety:
     def test_download_remote_media_blocks_unsafe_urls(self):
         adapter = _make_adapter()
+        adapter._send_session = object()
 
-        with patch("tools.url_safety.is_safe_url", return_value=False):
+        with patch("tools.url_safety.async_is_safe_url", new=AsyncMock(return_value=False)):
             try:
                 asyncio.run(adapter._download_remote_media("http://127.0.0.1/private.png"))
             except ValueError as exc:
-                assert "Blocked unsafe URL" in str(exc)
+                assert "Blocked unsafe" in str(exc)
+                assert "SSRF protection" in str(exc)
             else:
                 raise AssertionError("expected ValueError for unsafe URL")
 
@@ -879,4 +881,3 @@ class TestWeixinVoiceGatewayHandoff:
             "VOICE event body leaked Tencent's STT text — runner would trust "
             "the wrong transcript instead of re-transcribing (#27300)."
         )
-

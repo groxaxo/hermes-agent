@@ -737,8 +737,7 @@ class GatewaySessionCommandsMixin:
             SAVE_USAGE, default_save_filename, normalize_save_format, render_session_for_save)
 
         parts = event.get_command_args().split()
-        redact = bool(parts) and parts[-1].lower() in ("redact", "--redact")
-        if redact:
+        if parts and parts[-1].lower() in ("redact", "--redact"):
             parts = parts[:-1]
         if not parts:
             return SAVE_USAGE
@@ -758,9 +757,10 @@ class GatewaySessionCommandsMixin:
         export_data = await self._session_db.export_session(session_id)
         if not export_data:
             return f"No stored messages found for this session ({session_id})."
-        if redact:
-            from hermes_cli.session_export_md import redact_session_data
-            export_data = redact_session_data(export_data)
+        # A messaging adapter is a network boundary.  Always export the safe visible transcript;
+        # raw tool records remain available only through the local CLI export path.
+        from hermes_cli.session_export_md import redact_session_for_messaging
+        export_data = redact_session_for_messaging(export_data)
         temp_dir = tempfile.mkdtemp(prefix="hermes_save_")
         temp_path = os.path.join(temp_dir, filename)
         try:

@@ -305,16 +305,50 @@ class WebhookAdapter(BasePlatformAdapter):
         window.append(now)
         return True
 
-    def _record_delivery_id(self, delivery_id: str, now: float) -> bool:
-        """Return True when this delivery should be processed."""
-        if (seen_at := self._seen_deliveries.get(delivery_id)) is not None and now - seen_at < self._idempotency_ttl:
-            return False
-        if seen_at is not None:
-            self._seen_deliveries.pop(delivery_id, None)
-        self._seen_deliveries[delivery_id] = now
+    def _record_replay_keys(self, replay_keys: list[str], now: float) -> bool:
+        """Atomically claim all replay identities, returning False when any is still live."""
+        for key in replay_keys:
+            seen_at = self._seen_deliveries.get(key)
+            if seen_at is not None and now - seen_at < self._idempotency_ttl:
+                return False
+        for key in replay_keys:
+            self._seen_deliveries[key] = now
         if len(self._seen_deliveries) > max(self._rate_limit * 2, 128):
             self._prune_seen_deliveries(now)
         return True
+
+    @staticmethod
+    def _delivery_and_replay_keys(request: "web.Request", raw_body: bytes, route_name: str,
+                                  profile: Optional[str]) -> tuple[str, list[str]]:
+        """Return the display delivery id and authenticated, route-scoped replay identities.
+
+        Provider IDs are authoritative only when their signature scheme binds them (Svix and
+        Standard Webhooks).  Body-only schemes also claim a body digest, so changing an unsigned
+        delivery header cannot replay the same authenticated payload.
+        """
+        headers = request.headers
+
+        def _header(name: str) -> str:
+            return headers.get(name, "") or headers.get(name.lower(), "") or headers.get(name.upper(), "")
+
+        supplied_id = (_header("X-GitHub-Delivery") or _header("svix-id") or _header("webhook-id")
+                       or _header("X-Request-ID"))
+        body_digest = hashlib.sha256(raw_body).hexdigest()
+        delivery_id = supplied_id or f"body-{body_digest[:32]}"
+        scope = f"{profile or 'default'}:{route_name}:"
+
+        if _header("svix-signature") and _header("svix-id"):
+            identities = ["signed-id:svix:" + _header("svix-id")]
+        elif _header("webhook-signature") and _header("webhook-id"):
+            identities = ["signed-id:standard:" + _header("webhook-id")]
+        elif _header("X-Webhook-Signature-V2") and _header("X-Webhook-Timestamp"):
+            signed_material = _header("X-Webhook-Timestamp").encode() + b"." + raw_body
+            identities = ["signed-v2:" + hashlib.sha256(signed_material).hexdigest()]
+        else:
+            identities = ["body:" + body_digest]
+            if supplied_id:
+                identities.append("delivery-id:" + supplied_id)
+        return delivery_id, [scope + identity for identity in identities]
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         return {"name": chat_id, "type": "webhook"}
@@ -533,10 +567,18 @@ class WebhookAdapter(BasePlatformAdapter):
         # Rate limiting (after auth)
         if not self._record_rate_limit_hit(route_name, time.time()):
             return _json_error("Rate limit exceeded", 429)
+        headers = request.headers
+        delivery_id, replay_keys = self._delivery_and_replay_keys(
+            request, raw_body, route_name, profile)
+        now = time.time()
+        # Claim replay identities before event filters or route scripts.  Those paths may have
+        # external side effects and must never run twice for the same authenticated delivery.
+        if not self._record_replay_keys(replay_keys, now):
+            logger.info("[webhook] Skipping duplicate delivery %s", delivery_id)
+            return web.json_response({"status": "duplicate", "delivery_id": delivery_id}, status=200)
         payload = self._parse_body(raw_body)
         if payload is _UNPARSEABLE:
             return _json_error("Cannot parse body", 400)
-        headers = request.headers
         event_type = (headers.get("X-GitHub-Event", "") or headers.get("X-GitLab-Event", "")
                       or payload.get("event_type", "") or payload.get("type", "") or "unknown")
         allowed_events = route_config.get("events", [])
@@ -564,12 +606,6 @@ class WebhookAdapter(BasePlatformAdapter):
             prompt = self._render_prompt(route_config.get("prompt", ""), payload, event_type, route_name)
             if skills := route_config.get("skills", []):
                 prompt = self._apply_skills(prompt, skills)
-        delivery_id = headers.get("X-GitHub-Delivery", headers.get("svix-id", headers.get(
-            "webhook-id", headers.get("X-Request-ID", str(int(time.time() * 1000))))))
-        now = time.time()  # idempotency: skip duplicate deliveries (webhook retries)
-        if not self._record_delivery_id(delivery_id, now):
-            logger.info("[webhook] Skipping duplicate delivery %s", delivery_id)
-            return web.json_response({"status": "duplicate", "delivery_id": delivery_id}, status=200)
         if route_config.get("deliver_only"):
             return await self._handle_deliver_only(prompt, payload, route_config, route_name, event_type, delivery_id,
                                                    profile)
