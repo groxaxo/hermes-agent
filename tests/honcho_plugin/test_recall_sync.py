@@ -8,9 +8,12 @@ from plugins.memory.honcho.client import HonchoClientConfig
 class RecallManager:
     def __init__(self):
         self.queries = []
+        self.searches = []
+        self.session_context_calls = []
         self.prompts = []
         self.queued = []
         self.pending_context = {}
+        self.current_query = ""
 
     def set_context_result(self, session, context):
         self.pending_context[session] = context
@@ -20,7 +23,16 @@ class RecallManager:
 
     def get_prefetch_context(self, session, query, **kwargs):
         self.queries.append((session, query))
+        self.current_query = query
         return {"representation": f"base:{query}"}
+
+    def search_context(self, session, query, **kwargs):
+        self.searches.append((session, query, kwargs))
+        return f"search:{query}"
+
+    def get_session_context(self, session, **kwargs):
+        self.session_context_calls.append((session, kwargs))
+        return {"recent_messages": [{"role": "user", "content": f"recent:{self.current_query}"}]}
 
     def dialectic_query(self, session, prompt, **kwargs):
         self.prompts.append((session, prompt, kwargs))
@@ -68,9 +80,15 @@ def test_two_queries_never_consume_previous_query_caches(tmp_path, monkeypatch):
         assert "STALE" not in result
         if turn == 2:
             assert "Plan the garden" not in result
-        assert query in provider._manager.prompts[-1][1]
+        assert f"search:{query}" in result
+        assert f"recent:{query}" in result
         provider.queue_prefetch(query)
     assert provider._manager.queries == [("session-a", "Plan the garden"), ("session-a", "Debug the compiler")]
+    assert [(session, query) for session, query, _ in provider._manager.searches] == [
+        ("session-a", "Plan the garden"),
+        ("session-a", "Debug the compiler"),
+    ]
+    assert provider._manager.prompts == []
     assert provider._manager.queued == []
     assert provider._base_context_cache == "STALE BASE"
     assert provider._prefetch_result == "STALE DIALECTIC"

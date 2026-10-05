@@ -66,29 +66,50 @@ def prefetch_sync(provider, query: str) -> str:
                 ) or {}) if context_due else ""
                 if expired():
                     return
+
+                # Peer representations are eventually derived and can lag a just-written turn.
+                # Rewrite the retrieval query with Hermes' configured memory_query_rewrite model
+                # (GLM-5.3 on Z.AI here), then retrieve stored evidence directly from Honcho.
+                # Honcho dialectic is intentionally not on the synchronous critical path: a backend
+                # reasoning outage must never suppress already-persisted memory.
+                rewritten = ""
+                if rewriter:
+                    try:
+                        rewritten = rewriter(query).strip()
+                    except Exception as exc:
+                        logger.debug("Honcho query rewriter failed: %s", exc)
+                search_queries = [query]
+                if rewritten and rewritten.casefold() != query.casefold():
+                    search_queries.insert(0, rewritten)
+
+                evidence_parts = []
+                for search_query in search_queries:
+                    if expired():
+                        return
+                    try:
+                        hit = manager.search_context(session, search_query, max_tokens=600, peer="user") or ""
+                        if hit:
+                            evidence_parts.append(f"[Honcho current-query message evidence; query={search_query!r}]\n{hit}")
+                    except Exception as exc:
+                        logger.debug("Honcho current-query message search failed: %s", exc)
+
+                # Always include a small tail of the current Honcho session. This closes the
+                # derivation/index lag gap immediately after a successful per-turn write.
+                try:
+                    recent = (manager.get_session_context(session, peer="user") or {}).get("recent_messages", [])
+                    lines = []
+                    for item in recent[-6:]:
+                        content = (item.get("content") or "").strip()
+                        if content:
+                            lines.append(f'[{item.get("role") or "unknown"}] {content[:700]}')
+                    if lines:
+                        evidence_parts.append("[Honcho recent-session evidence]\n" + "\n".join(lines))
+                except Exception as exc:
+                    logger.debug("Honcho recent-session recall failed: %s", exc)
+
+                raw_recall = "\n\n".join(dict.fromkeys(evidence_parts))
                 dialectic = ""
-                if dialectic_due:
-                    rewritten = ""
-                    if rewriter:
-                        try:
-                            rewritten = rewriter(query).strip()
-                        except Exception as exc:
-                            logger.debug("Honcho query rewriter failed: %s", exc)
-                    results = []
-                    for i, level in enumerate(levels):
-                        if expired():
-                            return
-                        if results and provider._signal_sufficient(results[-1]):
-                            break
-                        prompt = (provider._build_dialectic_prompt(i, results, not base) if results else
-                                  rewritten or "Recall evidence relevant to the user's current request.")
-                        prompt = f"Current user request:\n{query}\n\n{prompt}"
-                        result = manager.dialectic_query(session, prompt, reasoning_level=level,
-                                                        peer="user", raise_errors=True)
-                        if result and result.strip():
-                            results.append(result)
-                    dialectic = results[-1] if results else ""
-                holder["result"] = (base, dialectic)
+                holder["result"] = (base, raw_recall, dialectic)
             except Exception as exc:
                 logger.debug("Honcho synchronous recall failed: %s", exc)
 
@@ -101,7 +122,7 @@ def prefetch_sync(provider, query: str) -> str:
                 or provider._manager is not manager or provider._session_key != session
                 or provider._turn_count != turn):
             return ""
-        base, dialectic = holder["result"]
+        base, raw_recall, dialectic = holder["result"]
         if context_due:
             provider._last_context_turn = turn
         if dialectic_due:
@@ -110,7 +131,7 @@ def prefetch_sync(provider, query: str) -> str:
                 provider._dialectic_empty_streak = 0
             else:
                 provider._dialectic_empty_streak += 1
-        parts = [provider._pop_auth_notice(), base, dialectic]
+        parts = [provider._pop_auth_notice(), base, raw_recall, dialectic]
         return provider._truncate_to_budget("\n\n".join(part for part in parts if part and part.strip()))
     finally:
         # Thread.join may return before a coarse host clock crosses the deadline.
