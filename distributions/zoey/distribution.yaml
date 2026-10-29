@@ -1,0 +1,8 @@
+name: zoey
+version: "0.2.0"
+description: "A minimal West Auckland AI companion with four native personality presets."
+author: groxaxo
+license: MIT
+distribution_owned:
+  - SOUL.md
+  - config.yaml
