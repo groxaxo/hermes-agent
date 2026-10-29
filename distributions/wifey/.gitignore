@@ -1,0 +1,11 @@
+# Public package allowlist. Runtime profiles belong outside this source folder.
+# New public assets must be deliberately allowed here and reviewed for privacy.
+*
+!/.gitignore
+!/distribution.yaml
+!/SOUL.md
+!/README.md
+!/TEST_PROMPTS.md
+!/skills/
+!/skills/wifey-conversation/
+!/skills/wifey-conversation/SKILL.md
