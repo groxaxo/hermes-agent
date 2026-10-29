@@ -1,8 +1,0 @@
-name: wifey
-version: "0.1.0"
-description: "A warm, sharp bilingual companion who knows when to get down to work."
-author: groxaxo
-license: MIT
-distribution_owned:
-  - SOUL.md
-  - skills/wifey-conversation

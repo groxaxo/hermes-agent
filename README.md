@@ -16,7 +16,7 @@
 
 > This fork installs from **`groxaxo/hermes-agent`** by default. The upstream project remains **`NousResearch/hermes-agent`**.
 
-**Wifey companion profile:** [source and deployment guide](distributions/wifey/README.md) · [standalone private project](https://github.com/groxaxo/hermes-wifey) (owner access required).
+**Zoey Mini companion:** [minimal profile distribution](distributions/zoey/README.md) · [private project and isolated VM deployment](https://github.com/groxaxo/hermes-wifey) (owner access required).
 
 Use any model you want — [Nous Portal](https://portal.nousresearch.com), [OpenRouter](https://openrouter.ai) (200+ models), [NVIDIA NIM](https://build.nvidia.com) (Nemotron), [Xiaomi MiMo](https://platform.xiaomimimo.com), [z.ai/GLM](https://z.ai), [Kimi/Moonshot](https://platform.moonshot.ai), [MiniMax](https://www.minimax.io), [Hugging Face](https://huggingface.co), OpenAI, or your own endpoint. Switch with `hermes model` — no code changes, no lock-in.
 
